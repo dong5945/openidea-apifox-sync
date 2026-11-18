@@ -1,0 +1,95 @@
+id = "lidengyin.apifox-sync"
+name = "Apifox Sync"
+version = "0.10.1"
+description = "读取项目里的 Spring Controller 源码，生成 OpenAPI 3.0 并同步到 Apifox 项目；无需启动服务，不用 Swagger。"
+authors = ["acme"]
+homepage = "https://github.com/lidengyin/openidea-apifox-sync"
+license = "MIT"
+categories = ["frameworks", "tools"]
+icon = "icon.svg"
+# Built with openidea-plugin 0.1.46 (plugin API 1.9); storage/secrets/net/http
+# would also run on 1.4, but the manifest states the API the component was
+# built for so older IDEs get an older package instead of a load error.
+engines.openidea = "^1.9"
+# Built by `openidea-plugin build`; loaded the first time a command runs.
+wasm = "dist/plugin.wasm"
+
+# Everything the code may do. The user approves this list at install time.
+[capabilities]
+required = ["project.read", "project.write", "storage", "secrets", "net:api.apifox.com", "net:ask"]
+
+# The Apifox personal access token. It lives in the OS keychain; the plugin
+# never reads it — requests carry `{{secret:apifox_token}}` and the host fills
+# it in on the way out.
+[[contributes.secrets]]
+name = "apifox_token"
+label = "Apifox 访问令牌"
+description = "Apifox → 账号设置 → API 访问令牌（请求以 Bearer 发送）。"
+
+[[contributes.commands]]
+id = "sync-apifox"
+title = "Apifox Sync: 同步接口到 Apifox"
+category = "Apifox Sync"
+
+[[contributes.commands]]
+id = "export-yaml"
+title = "Apifox Sync: 导出 OpenAPI YAML"
+category = "Apifox Sync"
+
+[[contributes.commands]]
+id = "export-postman"
+title = "Apifox Sync: 导出 Postman Collection"
+category = "Apifox Sync"
+
+[[contributes.commands]]
+id = "export-openapi"
+title = "Apifox Sync: 导出 OpenAPI JSON"
+category = "Apifox Sync"
+
+[[contributes.commands]]
+id = "configure-apifox"
+title = "Apifox Sync: 配置项目 ID / 访问令牌"
+category = "Apifox Sync"
+
+# The settings page (server / token / project / branch / module / mapping table)
+# shows up as a tool window on the right, like ApifoxHelper's settings tab.
+[[contributes.views]]
+id = "settings"
+title = "Apifox Sync"
+icon = "icon.svg"
+location = "right"
+group = "apifox"
+
+# The mapping table gets its own tab: a view body is a single Form or Table.
+[[contributes.views]]
+id = "mapping"
+title = "映射"
+icon = "icon.svg"
+location = "right"
+group = "apifox"
+
+# Right-click a controller file or folder in the Project view.
+[[contributes.menus]]
+menu = "projectView.context"
+command = "sync-apifox"
+submenu = "Apifox Sync"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "export-yaml"
+submenu = "Apifox Sync"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "export-postman"
+submenu = "Apifox Sync"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "export-openapi"
+submenu = "Apifox Sync"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "configure-apifox"
+submenu = "Apifox Sync"

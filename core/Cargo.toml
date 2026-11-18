@@ -1,0 +1,20 @@
+[package]
+name = "apifox-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure logic for an OpenIDEA -> Apifox export plugin: Java/Spring scan, OpenAPI 3.0 rendering, Apifox import request."
+publish = false
+
+# Standalone: the plugin shell above is a separate package with its own
+# SDK/git dependency, and must not drag this crate into its build.
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+serde_json = "1"
+
+[[bin]]
+name = "apifox-gen"
+path = "src/bin/apifox_gen.rs"

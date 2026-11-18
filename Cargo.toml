@@ -1,0 +1,26 @@
+[package]
+name = "openidea-plugin-lidengyin-apifox-sync"
+version = "0.10.1"
+edition = "2021"
+publish = false
+
+# A plugin builds on its own (target wasm32-wasip2), outside any IDE workspace.
+# `core` is its own workspace (pure logic, testable without the SDK), so it is
+# excluded here even though it is used as a path dependency.
+[workspace]
+exclude = ["core"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openidea-plugin = { git = "https://github.com/l0ng-ai/openidea", tag = "v0.1.46" }
+apifox-core = { path = "core" }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
