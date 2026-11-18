@@ -10,8 +10,8 @@
 | 推送 | **未成功**：本机到 github.com:443 连不通，需要你在有代理的环境执行 `git push` |
 | 签名密钥 | 私钥 `C:\Users\DELL\.openidea-keys\apifox-sync.key`（勿提交、自行备份） |
 | 公钥 | `8oG5Be7v1eVC5djl5JahY89IyRu+PF/6OUG/Tb6E8d4=` |
-| 安装包 | `dist/lidengyin.apifox-sync-0.10.1.oiplugin`（208.5 KiB，已签名） |
-| sha256 | `e44c7600500b5355a12c38e045b791552e7b8c362f9615107b1909646d773ec5` |
+| 安装包 | `dist/lidengyin.apifox-sync-0.11.1.oiplugin`（229.2 KiB，已签名） |
+| sha256 | `8c201c51a981d6d121a52eb833220dac5cf3bd09d07ba38618d5a21daa4bc0f0` |
 | 市场 PR 文件 | `../openidea-plugins-pr/publishers/lidengyin.toml`、`plugins/lidengyin.apifox-sync.toml` |
 
 ## 1. 推送源码
@@ -27,14 +27,14 @@ git push -u origin main
 
 ## 2. 打 Release
 
-仓库里创建 tag `v0.10.1` 的 Release，上传：
+仓库里创建 tag `v0.11.1` 的 Release，上传：
 
-- `dist/lidengyin.apifox-sync-0.10.1.oiplugin`
+- `dist/lidengyin.apifox-sync-0.11.1.oiplugin`
 
 上传后确认直链可下载（应等于 PR 文件里的 `package`）：
 
 ```
-https://github.com/lidengyin/openidea-apifox-sync/releases/download/v0.10.1/lidengyin.apifox-sync-0.10.1.oiplugin
+https://github.com/lidengyin/openidea-apifox-sync/releases/download/v0.11.1/lidengyin.apifox-sync-0.11.1.oiplugin
 ```
 
 > Release 没建好之前，PR 的 CI 会下载 404，先建 Release 再提 PR。

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use apifox_core::{apifox, openapi, scan_modules, scan_sources};
+use apifox_core::{apifox, openapi, scan_modules};
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -100,7 +100,21 @@ fn main() -> ExitCode {
                 .next()
                 .expect("one document per module")
         }
-        None => scan_sources(&sources),
+        None => {
+            let root_path = Path::new(&root);
+            let pairs: Vec<(String, String)> = files
+                .iter()
+                .zip(sources.iter())
+                .map(|(f, text)| {
+                    let rel = f
+                        .strip_prefix(root_path)
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_else(|_| f.to_string_lossy().replace('\\', "/"));
+                    (rel, text.clone())
+                })
+                .collect();
+            apifox_core::scan_project_files(&pairs)
+        }
     };
     if doc.endpoints.is_empty() {
         eprintln!("扫描了 {} 个 Java 文件，未找到 Spring Controller", sources.len());

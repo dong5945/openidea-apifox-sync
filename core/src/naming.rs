@@ -109,8 +109,10 @@ pub fn apply(doc: &mut ApiDoc, naming: Naming) {
         if let Some((_, ty)) = &mut ep.body {
             rename_ty(ty, naming);
         }
-        if let Some(ty) = &mut ep.response {
-            rename_ty(ty, naming);
+        for response in &mut ep.responses {
+            if let Some(ty) = &mut response.ty {
+                rename_ty(ty, naming);
+            }
         }
     }
     for ty in doc.schemas.values_mut() {

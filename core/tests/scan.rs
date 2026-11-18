@@ -72,10 +72,11 @@ fn request_body_and_response_are_refs_to_dtos() {
         create.body.as_ref().map(|(mime, ty)| (mime.as_str(), ty.clone())),
         Some(("application/json", Ty::Ref("UserDto".into())))
     );
-    assert_eq!(create.response, Some(Ty::Ref("UserDto".into())));
+    assert_eq!(create.responses[0].code, "200");
+    assert_eq!(create.responses[0].ty, Some(Ty::Ref("UserDto".into())));
 
     let page = doc.endpoints.iter().find(|e| e.path == "/api/users/page").unwrap();
-    match page.response.as_ref().unwrap() {
+    match page.responses[0].ty.as_ref().unwrap() {
         Ty::Object(fields) => {
             let records = fields.iter().find(|f| f.name == "records").unwrap();
             assert_eq!(records.ty, Ty::Array(Box::new(Ty::Ref("UserDto".into()))));
@@ -194,7 +195,7 @@ public class ExternalDto {
     let docs = apifox_core::scan_modules(&files, &["erp".to_string()]);
     let doc = &docs[0];
     assert_eq!(doc.endpoints.len(), 1);
-    match doc.endpoints[0].response.as_ref().expect("response") {
+    match doc.endpoints[0].responses[0].ty.as_ref().expect("response") {
         Ty::Array(inner) => assert_eq!(**inner, Ty::Ref("ExternalDto".into())),
         other => panic!("unexpected response {other:?}"),
     }
@@ -342,7 +343,7 @@ public class C {
     assert_eq!(ep.summary, "Swagger 摘要");
     assert_eq!(ep.description, "Swagger 描述");
     assert!(ep.deprecated);
-    assert_eq!(ep.response_description, "OK 描述");
+    assert_eq!(ep.responses[0].description, "OK 描述");
     assert_eq!(ep.params.len(), 1, "hidden parameter dropped");
     assert_eq!(ep.params[0].description, "用户 ID");
 }
@@ -395,14 +396,24 @@ fn naming_conversion_renames_fields_and_params() {
 }
 
 #[test]
-fn examples_are_generated() {
-    let doc = apifox_core::scan_sources(&sources());
+fn examples_only_come_from_annotations() {
+    let src = r#"
+package a;
+@RestController
+public class C {
+    @GetMapping("/u") public U u() { return null; }
+}
+class U {
+    @Schema(example = "alice")
+    private String name;
+    private long age;
+}
+"#;
+    let doc = apifox_core::scan_sources(&[src.to_string()]);
     let json = openapi::render(&doc);
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let user = &v["components"]["schemas"]["UserDto"]["properties"]["username"];
-    assert_eq!(user["example"], "示例");
-    let roles = &v["components"]["schemas"]["UserDto"]["properties"]["roles"];
-    assert!(roles["example"].is_array());
+    assert_eq!(v["components"]["schemas"]["U"]["properties"]["name"]["example"], "alice");
+    assert!(v["components"]["schemas"]["U"]["properties"]["age"].get("example").is_none());
 }
 
 #[test]
@@ -482,4 +493,228 @@ public class ModuleWins {
     assert_eq!(tag("/a"), "应用管理");
     assert_eq!(tag("/b"), "旧版标签");
     assert_eq!(tag("/c"), "覆盖标签");
+}
+
+#[test]
+fn fields_with_initializers_are_kept() {
+    let src = r#"
+package a;
+@RestController
+public class C {
+    @GetMapping("/r") public Resp r() { return null; }
+}
+class Resp {
+    @Schema(description = "columns")
+    private List<ProfitColumnVO> columns = new ArrayList<>();
+    @Schema(description = "rows")
+    private List<ProfitRowVO> rows = new ArrayList<>();
+    private List<String> warnings = new ArrayList<>();
+    private FeeRate feeRate;
+}
+class ProfitColumnVO { private String title; }
+class ProfitRowVO { private String ratioType; }
+class FeeRate { private String month; }
+"#;
+    let doc = apifox_core::scan_sources(&[src.to_string()]);
+    let schema = doc.schemas.get("Resp").expect("Resp");
+    let Ty::Object(fields) = schema else { panic!("{schema:?}") };
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, vec!["columns", "rows", "warnings", "feeRate"]);
+    assert!(doc.schemas.contains_key("ProfitRowVO"));
+    assert!(doc.schemas.contains_key("ProfitColumnVO"));
+}
+
+#[test]
+fn inherited_and_static_fields_match_reference() {
+    let src = r#"
+package a;
+@RestController
+public class C {
+    @GetMapping("/r") public Resp r() { return null; }
+}
+class Base {
+    private String createdBy;
+    private Long id;
+}
+class Resp extends Base {
+    private static final long serialVersionUID = 1L;
+    private String name;
+    private Long id;
+}
+"#;
+    let doc = apifox_core::scan_sources(&[src.to_string()]);
+    let Ty::Object(fields) = doc.schemas.get("Resp").expect("Resp") else { panic!() };
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, vec!["createdBy", "id", "name"]);
+}
+
+#[test]
+fn scoped_scan_uses_annotations_and_mapped_modules_only() {
+    let sources: Vec<(String, String)> = vec![
+        (
+            "shop/src/main/java/a/AnyName.java".into(),
+            r#"
+package a;
+@RestController
+public class AnyName {
+    @GetMapping("/x") public Resp x() { return null; }
+}
+"#
+            .into(),
+        ),
+        (
+            "shop/src/main/java/a/Resp.java".into(),
+            r#"
+package a;
+public class Resp { private Shared shared; }
+"#
+            .into(),
+        ),
+        (
+            "common/src/main/java/b/Shared.java".into(),
+            r#"
+package b;
+public class Shared { private String name; }
+"#
+            .into(),
+        ),
+        (
+            "other/src/main/java/c/Hidden.java".into(),
+            r#"
+package c;
+@RestController
+public class Hidden {
+    @GetMapping("/hidden") public String h() { return null; }
+}
+"#
+            .into(),
+        ),
+    ];
+    let paths: Vec<String> = sources.iter().map(|(p, _)| p.clone()).collect();
+    let docs = apifox_core::scan_modules_scoped(
+        &paths,
+        |path| {
+            sources
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, text)| text.clone())
+        },
+        &["shop".to_string()],
+        &[],
+    );
+    assert_eq!(docs[0].endpoints.len(), 1);
+    assert_eq!(docs[0].endpoints[0].path, "/x");
+    assert!(docs[0].schemas.contains_key("Shared"));
+}
+
+#[test]
+fn scoped_scan_falls_back_when_the_selection_has_no_controller() {
+    let files = vec![
+        (
+            "erp/src/A.java".to_string(),
+            r#"
+package a;
+@RestController
+@RequestMapping("/a")
+public class A {
+    @GetMapping("/x") public String x() { return null; }
+}
+"#
+            .to_string(),
+        ),
+        (
+            "erp/src/Dto.java".to_string(),
+            "package a;\npublic class Dto { private String name; }\n".to_string(),
+        ),
+    ];
+    let paths: Vec<String> = files.iter().map(|(p, _)| p.clone()).collect();
+    let scan = apifox_core::scan_modules_scoped_report(
+        &paths,
+        |path| files.iter().find(|(p, _)| p == path).map(|(_, t)| t.clone()),
+        &["erp".to_string()],
+        &["erp/src/Dto.java".to_string()],
+    );
+    assert!(scan.selection_ignored, "a DTO selection must not hide the module");
+    assert_eq!(scan.module_files, 2);
+    assert_eq!(scan.docs[0].endpoints.len(), 1);
+    assert_eq!(scan.docs[0].endpoints[0].path, "/a/x");
+}
+
+#[test]
+fn scoped_scan_keeps_a_controller_selection() {
+    let files = vec![
+        (
+            "erp/src/A.java".to_string(),
+            r#"
+package a;
+@RestController
+public class A {
+    @GetMapping("/a") public String a() { return null; }
+}
+"#
+            .to_string(),
+        ),
+        (
+            "erp/src/B.java".to_string(),
+            r#"
+package a;
+@RestController
+public class B {
+    @GetMapping("/b") public String b() { return null; }
+}
+"#
+            .to_string(),
+        ),
+    ];
+    let paths: Vec<String> = files.iter().map(|(p, _)| p.clone()).collect();
+    let scan = apifox_core::scan_modules_scoped_report(
+        &paths,
+        |path| files.iter().find(|(p, _)| p == path).map(|(_, t)| t.clone()),
+        &["erp".to_string()],
+        &["erp/src/A.java".to_string()],
+    );
+    assert!(!scan.selection_ignored);
+    assert_eq!(scan.docs[0].endpoints.len(), 1);
+    assert_eq!(scan.docs[0].endpoints[0].path, "/a");
+}
+
+#[test]
+fn module_scope_accepts_a_project_root_that_is_the_module() {
+    let paths = vec!["src/main/java/a/A.java".to_string()];
+    assert_eq!(apifox_core::module_scope(&paths, "", "saas-backend"), "");
+    assert_eq!(apifox_core::module_scope(&paths, "saas-erp", "saas-erp"), "");
+    assert_eq!(apifox_core::module_scope(&paths, "saas-erp", "SAAS-ERP"), "");
+    assert_eq!(
+        apifox_core::module_scope(&paths, "saas-erp", "saas-backend"),
+        "saas-erp"
+    );
+    let inside = vec!["saas-erp/src/main/java/a/A.java".to_string()];
+    assert_eq!(apifox_core::module_scope(&inside, "saas-erp", "saas-backend"), "saas-erp");
+}
+#[test]
+fn responses_keep_declared_codes_and_media_types() {
+    let src = r#"
+package a;
+@RestController
+public class C {
+    @ApiResponses({
+        @ApiResponse(code = 200, message = "OK"),
+        @ApiResponse(code = 401, message = "未登录")
+    })
+    @GetMapping(value = "/x", produces = "application/xml")
+    public U x() { return null; }
+}
+class U { private String name; }
+"#;
+    let doc = apifox_core::scan_sources(&[src.to_string()]);
+    let ep = &doc.endpoints[0];
+    let codes: Vec<&str> = ep.responses.iter().map(|r| r.code.as_str()).collect();
+    assert_eq!(codes, vec!["200", "401"]);
+    let ok = &ep.responses[0];
+    assert_eq!(ok.media, "application/xml");
+    assert_eq!(ok.description, "OK");
+    assert_eq!(ok.ty, Some(Ty::Ref("U".into())));
+    let unauthorized = &ep.responses[1];
+    assert_eq!(unauthorized.ty, None);
+    assert_eq!(unauthorized.description, "No Content");
 }

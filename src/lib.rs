@@ -10,14 +10,15 @@
 //! enabled rows, scans the module's sources and imports each separately.
 
 use apifox_core::{
-    apifox, openapi, postman, prefix_paths, project as code_project, scan_project_files,
+    apifox, openapi, postman, prefix_paths, project as code_project, scan_modules_scoped,
     yaml,
 };
 use openidea_plugin::views::{
     Body, Button, Field, FieldValue, Table, View, ViewEvent, Viewport, Views,
 };
 use openidea_plugin::{
-    host, register_plugin, Error, HttpRequest, Invocation, NotificationLevel, Plugin, Project,
+    host, register_plugin, Error, HttpRequest, Invocation, LogLevel, NotificationLevel, Plugin,
+    Project,
 };
 use serde_json::{json, Value};
 
@@ -35,6 +36,11 @@ struct Mapping {
     /// Directory relative to the project root; `""` = whole project.
     path: String,
     project_id: String,
+    /// Apifox team/project display names, kept so the edit form can restore
+    /// the dropdown selection (the API only exposes names, not ids).
+    team_id: Option<u64>,
+    team_name: String,
+    project_name: String,
     branch_id: Option<u64>,
     branch_name: String,
     module_id: Option<u64>,
@@ -58,6 +64,9 @@ impl Default for Mapping {
             name: String::new(),
             path: String::new(),
             project_id: String::new(),
+            team_id: None,
+            team_name: String::new(),
+            project_name: String::new(),
             branch_id: None,
             branch_name: String::new(),
             module_id: None,
@@ -90,6 +99,40 @@ impl Mapping {
     }
 }
 
+/// One module's upload, kept after the toast so the `report` view can list it
+/// (the reference plugin prints this per module into its console).
+#[derive(Clone, Default)]
+struct ImportEntry {
+    module: String,
+    path: String,
+    project_id: String,
+    project_name: String,
+    branch: String,
+    apifox_module: String,
+    endpoint_folder: String,
+    schema_folder: String,
+    endpoints: usize,
+    /// `GET /report/summary — 摘要`, capped for the view.
+    endpoint_list: Vec<String>,
+    outcome: Option<apifox::ImportOutcome>,
+    /// Why the module was skipped or failed (shown instead of counters).
+    note: Option<String>,
+}
+
+/// Everything one sync produced: per-module results plus the totals table.
+#[derive(Clone, Default)]
+struct ImportReport {
+    entries: Vec<ImportEntry>,
+    created: u64,
+    updated: u64,
+    ignored: u64,
+    failed: u64,
+    schemas_created: u64,
+    schemas_updated: u64,
+    /// `扫描 812 个 Java 文件，5 个模块里的 96 个` — what the scan covered.
+    scanned: String,
+}
+
 #[derive(Default)]
 pub struct Main {
     mappings: Vec<Mapping>,
@@ -113,6 +156,7 @@ pub struct Main {
     projects: Vec<apifox::Named>,
     detected: Vec<code_project::CodeModule>,
     e_team: String,
+    e_team_id: Option<u64>,
     e_project_pick: String,
     e_code_module: String,
     endpoint_folders: Vec<apifox::Folder>,
@@ -122,6 +166,8 @@ pub struct Main {
     modules: Vec<apifox::Module>,
     token_draft: String,
     status: Option<String>,
+    /// Last sync's result, rendered by the `report` view.
+    report: Option<ImportReport>,
 }
 
 impl Plugin for Main {
@@ -132,7 +178,7 @@ impl Plugin for Main {
         _arg: Option<&str>,
     ) -> Result<Option<String>, Error> {
         match id {
-            "sync-apifox" => sync(ctx),
+            "sync-apifox" => self.sync(ctx),
             "export-openapi" => export(ctx),
             "export-yaml" => export_yaml(ctx),
             "export-postman" => export_postman(ctx),
@@ -162,6 +208,9 @@ impl Views for Main {
             self.loaded_for = root.clone();
             self.editing = None;
         }
+        if view == "report" {
+            return Ok(self.report_view());
+        }
         if view == "mapping" {
             if let Some(i) = self.editing {
                 if i < self.mappings.len() {
@@ -180,6 +229,21 @@ impl Views for Main {
             .map(|p| p.root().unwrap_or_default())
             .unwrap_or_default();
 
+        if view == "report" {
+            if let ViewEvent::Button(id) = event {
+                match id.as_str() {
+                    "clear_report" => {
+                        self.report = None;
+                        host::refresh_view(view);
+                    }
+                    "back_to_mapping" => {
+                        let _ = host::reveal_view("mapping");
+                    }
+                    _ => {}
+                }
+            }
+            return Ok(());
+        }
         if view == "mapping" {
             if let Some(i) = self.editing {
                 self.handle_editor(i, event, &root, ctx)?;
@@ -293,13 +357,160 @@ impl Main {
         View::new(Body::Form(fields))
             .button(Button::new("save_server", "保存服务器"))
             .button(Button::new("save_token", "保存令牌"))
-            .button(Button::new("test", "测试连接").icon("run"))
+            .button(Button::new("test", "测试连接"))
             .status(
                 &self
                     .status
                     .clone()
                     .unwrap_or_else(|| "令牌存钥匙串，插件读不到明文".into()),
             )
+    }
+
+    /// The upload report the reference plugin prints into its console: per
+    /// module the Apifox target, the counters, then the totals table.
+    fn report_view(&self) -> View {
+        let Some(report) = &self.report else {
+            return View::new(Body::Message(
+                "还没有导入记录：在「映射」页点「同步全部」，这里会按模块列出导入结果。".into(),
+            ));
+        };
+        let mut html = String::new();
+        html.push_str(
+            "<div style=\"font-family:var(--openidea-font-mono,ui-monospace,Consolas,monospace);font-size:12px;line-height:1.65;
+             white-space:pre-wrap;padding:4px 6px\">",
+        );
+        html.push_str(&format!(
+            "<div style=\"font-size:13px;font-weight:600\">导入结果</div>\
+             <div style=\"color:var(--openidea-fg-muted)\">共 {} 个模块：接口新建 {}、更新 {}、忽略 {}、失败 {}；\
+             数据模型新建 {}、更新 {}</div>",
+            report.entries.len(),
+            report.created,
+            report.updated,
+            report.ignored,
+            report.failed,
+            report.schemas_created,
+            report.schemas_updated
+        ));
+        if !report.scanned.is_empty() {
+            html.push_str(&format!(
+                "<div style=\"color:var(--openidea-fg-muted)\">{}</div>",
+                esc(&report.scanned)
+            ));
+        }
+
+        for entry in &report.entries {
+            html.push_str(
+                "<div style=\"margin-top:12px;font-weight:600;border-top:1px solid var(--openidea-border);\
+                 padding-top:8px\">",
+            );
+            html.push_str(&format!("▌ {}", esc(&entry.module)));
+            if !entry.path.is_empty() {
+                html.push_str(&format!(
+                    " <span style=\"color:var(--openidea-fg-muted)\">({})</span>",
+                    esc(&entry.path)
+                ));
+            }
+            html.push_str("</div>");
+            html.push_str(&format!(
+                "<div style=\"color:var(--openidea-fg)\">项目ID: {}，项目名称: {}，分支/版本: {}，模块: {}，\
+                 接口路径: {}，数据模型路径: {}。{}</div>",
+                esc(&entry.project_id),
+                esc(&entry.project_name),
+                esc(&entry.branch),
+                esc(&entry.apifox_module),
+                esc(&entry.endpoint_folder),
+                esc(&entry.schema_folder),
+                if entry.outcome.is_some() {
+                    "导入成功"
+                } else {
+                    "未导入"
+                }
+            ));
+            match (&entry.outcome, &entry.note) {
+                (Some(out), _) => {
+                    html.push_str(&format!(
+                        "<div style=\"color:var(--openidea-fg-muted)\">接口 {} 个：新建 {}、更新 {}、忽略 {}、失败 {}｜\
+                         数据模型：新建 {}、更新 {}</div>",
+                        entry.endpoints,
+                        out.created,
+                        out.updated,
+                        out.ignored,
+                        out.failed,
+                        out.schemas_created,
+                        out.schemas_updated
+                    ));
+                    if !out.errors.is_empty() {
+                        html.push_str(&format!(
+                            "<div style=\"font-weight:600\">⚠ {}</div>",
+                            esc(&out.errors.join("；"))
+                        ));
+                    }
+                }
+                (None, note) => {
+                    html.push_str(&format!(
+                        "<div style=\"font-weight:600\">⚠ {}</div>",
+                        esc(note.as_deref().unwrap_or("跳过了这个模块"))
+                    ));
+                }
+            }
+            if entry.outcome.is_some() && !entry.endpoint_list.is_empty() {
+                html.push_str("<div style=\"color:var(--openidea-fg-muted)\">");
+                for line in &entry.endpoint_list {
+                    html.push_str(&format!("  {}<br>", esc(line)));
+                }
+                let rest = entry.endpoints.saturating_sub(entry.endpoint_list.len());
+                if rest > 0 {
+                    html.push_str(&format!("  … 还有 {rest} 个接口"));
+                }
+                html.push_str("</div>");
+            }
+        }
+
+        html.push_str(
+            "<table style=\"border-collapse:collapse;margin-top:14px;font-size:12px\">\
+             <tr><th style=\"text-align:left;padding:3px 18px 3px 0;border-bottom:1px solid var(--openidea-border)\">Type</th>\
+             <th style=\"text-align:right;padding:3px 18px 3px 0;border-bottom:1px solid var(--openidea-border)\">Created</th>\
+             <th style=\"text-align:right;padding:3px 18px 3px 0;border-bottom:1px solid var(--openidea-border)\">Updated</th>\
+             <th style=\"text-align:right;padding:3px 18px 3px 0;border-bottom:1px solid var(--openidea-border)\">Ignored</th>\
+             <th style=\"text-align:right;padding:3px 0;border-bottom:1px solid var(--openidea-border)\">Failed</th></tr>",
+        );
+        let row = |name: &str, created: u64, updated: u64, ignored: Option<u64>, failed: u64| {
+            format!(
+                "<tr><td style=\"padding:3px 18px 3px 0\">{name}</td>\
+                 <td style=\"text-align:right;padding:3px 18px 3px 0\">{created}</td>\
+                 <td style=\"text-align:right;padding:3px 18px 3px 0\">{updated}</td>\
+                 <td style=\"text-align:right;padding:3px 18px 3px 0\">{}</td>\
+                 <td style=\"text-align:right;padding:3px 0\">{failed}</td></tr>",
+                ignored.map(|v| v.to_string()).unwrap_or_else(|| "-".into())
+            )
+        };
+        html.push_str(&row(
+            "Endpoints",
+            report.created,
+            report.updated,
+            Some(report.ignored),
+            report.failed,
+        ));
+        // Apifox reports no "ignored" counter for schemas; `-` says so.
+        html.push_str(&row(
+            "Schemas",
+            report.schemas_created,
+            report.schemas_updated,
+            None,
+            0,
+        ));
+        html.push_str("</table></div>");
+
+        View::new(Body::Html(html))
+            .button(Button::new("back_to_mapping", "回映射"))
+            .button(Button::new("clear_report", "清空"))
+            .status(&format!(
+                "上次同步 {} 个模块：接口新建 {}、更新 {}、失败 {}",
+                report.entries.len(),
+                report.created,
+                report.updated,
+                report.failed
+            ))
     }
 
     fn mapping_view(&self, root: &str) -> View {
@@ -339,21 +550,21 @@ impl Main {
         };
         let status = self.status.clone().unwrap_or_else(|| {
             if self.mappings.is_empty() {
-                "点 + 新增一行，再在编辑页选源代码模块".into()
+                "点「新增」新建一行，再在编辑页选源代码模块".into()
             } else {
                 "双击任意行打开编辑（项目 ID、分支、模块、启用都在里面）".to_string()
             }
         });
         let _ = root;
         View::new(Body::Table(table))
-            .button(Button::new("add_row", "+"))
+            .button(Button::new("add_row", "新增"))
             .button(Button::new("edit_row", "编辑"))
-            .button(Button::new("delete_row", "−"))
+            .button(Button::new("delete_row", "删除"))
             .button(Button::new("clear_all", "清空"))
             .button(Button::new("from_config", "从配置导入"))
             .button(Button::new("preview", "预览变更"))
-            .button(Button::new("refresh", "刷新分支").icon("refresh"))
-            .button(Button::new("sync", "同步全部").icon("run"))
+            .button(Button::new("refresh", "刷新分支"))
+            .button(Button::new("sync", "同步全部"))
             .status(&status)
     }
 
@@ -387,6 +598,9 @@ impl Main {
             code_labels[0].clone()
         };
         let mut team_labels = vec!["（未选择）".to_string()];
+        if !self.e_team.is_empty() && !self.teams.iter().any(|t| t.name == self.e_team) {
+            team_labels.push(self.e_team.clone());
+        }
         team_labels.extend(self.teams.iter().map(|t| t.name.clone()));
         let selected_team = if team_labels.contains(&self.e_team) {
             self.e_team.clone()
@@ -394,6 +608,11 @@ impl Main {
             "（未选择）".to_string()
         };
         let mut project_labels = vec!["（未选择）".to_string()];
+        if !self.e_project_pick.is_empty()
+            && !self.projects.iter().any(|p| p.name == self.e_project_pick)
+        {
+            project_labels.push(self.e_project_pick.clone());
+        }
         project_labels.extend(self.projects.iter().map(|p| p.name.clone()));
         let selected_project = if project_labels.contains(&self.e_project_pick) {
             self.e_project_pick.clone()
@@ -468,12 +687,12 @@ impl Main {
         ];
         let _ = root;
         View::new(Body::Form(fields))
-            .button(Button::new("save", "保存").icon("save"))
-            .button(Button::new("reload_modules", "刷新模块").icon("refresh"))
-            .button(Button::new("reload_folders", "刷新目录").icon("refresh"))
-            .button(Button::new("reload_teams", "刷新团队").icon("refresh"))
-            .button(Button::new("reload", "刷新分支").icon("refresh"))
-            .button(Button::new("delete", "删除该行").icon("remove"))
+            .button(Button::new("save", "保存"))
+            .button(Button::new("reload_modules", "刷新模块"))
+            .button(Button::new("reload_folders", "刷新目录"))
+            .button(Button::new("reload_teams", "刷新团队"))
+            .button(Button::new("reload", "刷新分支"))
+            .button(Button::new("delete", "删除该行"))
             .button(Button::new("cancel", "返回列表"))
             .status(
                 &self
@@ -573,7 +792,7 @@ impl Main {
                     }
                 }
                 "sync" => {
-                    if let Some(msg) = sync(ctx)? {
+                    if let Some(msg) = self.sync(ctx)? {
                         self.status = Some(msg);
                     }
                 }
@@ -599,11 +818,20 @@ impl Main {
                 }
                 "e_project" => {
                     self.e_project = value.trim().to_string();
+                    if self
+                        .projects
+                        .iter()
+                        .find(|p| p.name == self.e_project_pick)
+                        .is_none_or(|p| p.id.to_string() != self.e_project)
+                    {
+                        self.e_project_pick.clear();
+                    }
                     return Ok(());
                 }
                 "e_team" => {
                     self.e_team = value.clone();
-                    self.e_project_pick = "（未选择）".into();
+                    self.e_team_id = self.teams.iter().find(|t| t.name == value).map(|t| t.id);
+                    self.e_project_pick.clear();
                     self.projects.clear();
                     if let Some(team) = self.teams.iter().find(|t| t.name == value) {
                         let id = team.id;
@@ -616,6 +844,8 @@ impl Main {
                         self.e_project = project.id.to_string();
                         let id = project.id.to_string();
                         self.refresh_lists(&id);
+                    } else {
+                        self.e_project_pick.clear();
                     }
                 }
                 "e_enabled" => {
@@ -659,6 +889,24 @@ impl Main {
                         m.path = code_path;
                         m.name = code_name;
                         m.project_id = self.e_project.clone();
+                        m.team_name = if self.e_team == "（未选择）" {
+                            String::new()
+                        } else {
+                            self.e_team.clone()
+                        };
+                        m.team_id = self
+                            .e_team_id
+                            .or_else(|| self.teams.iter().find(|t| t.name == self.e_team).map(|t| t.id));
+                        m.project_name = self.e_project_pick.clone();
+                        if m.project_name.is_empty() {
+                            if let Some(p) = self
+                                .projects
+                                .iter()
+                                .find(|p| p.id.to_string() == self.e_project)
+                            {
+                                m.project_name = p.name.clone();
+                            }
+                        }
                         let branch = self.branches.iter().find(|b| b.label() == self.e_branch);
                         m.branch_id = branch.map(|b| b.id);
                         m.branch_name = branch.map(|b| b.name.clone()).unwrap_or_default();
@@ -697,6 +945,9 @@ impl Main {
                     } else {
                         let pid = self.e_project.clone();
                         self.refresh_lists(&pid);
+                        if self.e_team_id.is_none() {
+                            self.resolve_team_for_project(&pid);
+                        }
                     }
                 }
                 "delete" => {
@@ -734,12 +985,38 @@ impl Main {
         self.e_naming = m.naming.clone();
         self.e_update_folder = m.update_folder;
         self.e_code_module = self.code_label(&m.path);
-        self.e_project_pick = m.project_id.clone();
         if self.detected.is_empty() {
             self.detected = self.code_modules(root, ctx);
         }
         if self.teams.is_empty() {
             self.fetch_teams();
+        }
+        self.e_team_id = m
+            .team_id
+            .or_else(|| self.teams.iter().find(|t| t.name == m.team_name).map(|t| t.id));
+        self.e_team = if !m.team_name.is_empty() {
+            m.team_name.clone()
+        } else {
+            self.e_team_id
+                .and_then(|id| self.teams.iter().find(|t| t.id == id))
+                .map(|t| t.name.clone())
+                .unwrap_or_default()
+        };
+        self.projects.clear();
+        if let Some(team_id) = self.e_team_id {
+            self.fetch_projects(team_id);
+        }
+        self.e_project_pick = if !m.project_name.is_empty() {
+            m.project_name.clone()
+        } else {
+            self.projects
+                .iter()
+                .find(|p| p.id.to_string() == m.project_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default()
+        };
+        if self.e_team_id.is_none() && self.e_project_pick.is_empty() {
+            self.resolve_team_for_project(&m.project_id);
         }
         self.branches.clear();
         self.modules.clear();
@@ -774,7 +1051,8 @@ impl Main {
             return Ok(());
         }
         match docs_for(&project, root, &rows, &[]) {
-            Ok(docs) => {
+            Ok(scan) => {
+                let docs = scan.docs;
                 let (mut changed, mut skipped) = (0, 0);
                 for (row, doc) in rows.iter().zip(docs.iter()) {
                     if doc.endpoints.is_empty() {
@@ -787,14 +1065,19 @@ impl Main {
                     }
                 }
                 let unchanged = rows.len() - changed - skipped;
-                self.status = Some(format!(
+                let mut status = format!(
                     "{changed} 个模块有变更，{unchanged} 个未变{}",
                     if skipped > 0 {
                         format!("，{skipped} 个无接口")
                     } else {
                         String::new()
                     }
-                ));
+                );
+                if !scan.notes.is_empty() {
+                    status.push_str("；");
+                    status.push_str(&scan.notes.join("；"));
+                }
+                self.status = Some(status);
             }
             Err(e) => self.status = Some(format!("预览失败：{e}")),
         }
@@ -954,6 +1237,26 @@ impl Main {
             }
         }
     }
+
+    /// Older mappings only stored the numeric project id. Walk the teams once
+    /// so the form can still show the team/project names.
+    fn resolve_team_for_project(&mut self, project_id: &str) {
+        if project_id.is_empty() || !host::secret_is_set(APIFOX_SECRET) {
+            return;
+        }
+        if self.teams.is_empty() {
+            self.fetch_teams();
+        }
+        for team in self.teams.clone() {
+            self.fetch_projects(team.id);
+            if let Some(project) = self.projects.iter().find(|p| p.id.to_string() == project_id) {
+                self.e_team_id = Some(team.id);
+                self.e_team = team.name;
+                self.e_project_pick = project.name.clone();
+                return;
+            }
+        }
+    }
     fn refresh_lists(&mut self, project_id: &str) {
         if project_id.is_empty() {
             self.status = Some("先填 Apifox 项目 ID".into());
@@ -1010,7 +1313,11 @@ impl Main {
     }
 }
 
-fn sync(ctx: &Invocation) -> Result<Option<String>, Error> {
+impl Main {
+    /// Scans the enabled mapping rows, imports each module and records the
+    /// result in `self.report`, which the `report` view shows (and refreshes
+    /// after every module, so the upload can be watched as it runs).
+    fn sync(&mut self, ctx: &Invocation) -> Result<Option<String>, Error> {
     let project = ctx.project().ok_or("请先打开一个 Java 项目再运行该命令")?;
     let root = project.root().unwrap_or_default();
     let mappings = load_mappings(&root);
@@ -1043,7 +1350,12 @@ fn sync(ctx: &Invocation) -> Result<Option<String>, Error> {
         return Ok(None);
     }
 
-    let docs = docs_for(&project, &root, &rows, &selected)?;
+    let ScanOutcome {
+        docs,
+        notes: scan_notes,
+        files,
+        module_files,
+    } = docs_for(&project, &root, &rows, &selected)?;
     // `server.servlet.context-path` from the nearest application.yml/properties.
     let base = server_base(&root);
 
@@ -1051,8 +1363,17 @@ fn sync(ctx: &Invocation) -> Result<Option<String>, Error> {
     let mut created = 0u64;
     let mut updated = 0u64;
     let mut failed = 0u64;
+    let mut hints: Vec<String> = scan_notes;
     let mut notes: Vec<String> = Vec::new();
     let mut done = 0usize;
+    let mut report = ImportReport {
+        scanned: format!("扫描 {files} 个 Java 文件（映射模块内 {module_files} 个）"),
+        ..Default::default()
+    };
+    // Open the result panel first: each module appears there as it finishes.
+    self.report = Some(report.clone());
+    let _ = host::reveal_view("report");
+    host::refresh_view("report");
 
     for (row, doc) in rows.iter().zip(docs.into_iter()) {
         if task.is_cancelled() {
@@ -1061,10 +1382,50 @@ fn sync(ctx: &Invocation) -> Result<Option<String>, Error> {
         done += 1;
         task.report(done as u32, Some(rows.len() as u32), Some(row.name.as_str()));
 
-
+        let mut entry = ImportEntry {
+            module: if row.name.is_empty() {
+                row.path.clone()
+            } else {
+                row.name.clone()
+            },
+            path: row.path.clone(),
+            project_id: row.project_id.clone(),
+            project_name: if row.project_name.is_empty() {
+                "—".to_string()
+            } else {
+                row.project_name.clone()
+            },
+            branch: row.branch_label(),
+            apifox_module: row.module_label(),
+            endpoint_folder: folder_report_label(row.endpoint_folder_id),
+            schema_folder: folder_report_label(row.schema_folder_id),
+            endpoints: doc.endpoints.len(),
+            endpoint_list: doc
+                .endpoints
+                .iter()
+                .take(20)
+                .map(|e| {
+                    if e.summary.is_empty() {
+                        format!("{} {}", e.method, e.path)
+                    } else {
+                        format!("{} {} — {}", e.method, e.path, e.summary)
+                    }
+                })
+                .collect(),
+            outcome: None,
+            note: None,
+        };
 
         if doc.endpoints.is_empty() {
-            notes.push(format!("{}：没有接口，跳过", row.name));
+            let note = format!(
+                "没有接口，跳过（项目 {} 个 Java 文件，映射模块内 {} 个）",
+                files, module_files
+            );
+            hints.push(format!("{}：{note}", row.name));
+            entry.note = Some(note);
+            report.entries.push(entry);
+            self.report = Some(report.clone());
+            host::refresh_view("report");
             continue;
         }
         let json = openapi::render(&doc);
@@ -1091,20 +1452,59 @@ fn sync(ctx: &Invocation) -> Result<Option<String>, Error> {
                     created += out.created;
                     updated += out.updated;
                     failed += out.failed;
+                    report.created += out.created;
+                    report.updated += out.updated;
+                    report.ignored += out.ignored;
+                    report.failed += out.failed;
+                    report.schemas_created += out.schemas_created;
+                    report.schemas_updated += out.schemas_updated;
                     if !out.errors.is_empty() {
                         notes.push(format!("{}：{}", row.name, out.errors.join("；")));
                     }
+                    entry.outcome = Some(out);
                 }
                 Err(e) => {
                     failed += 1;
+                    report.failed += 1;
                     notes.push(format!("{}：{e}", row.name));
+                    entry.note = Some(e);
                 }
             },
             Err(e) => {
                 failed += 1;
+                report.failed += 1;
                 notes.push(format!("{}：{e}", row.name));
+                entry.note = Some(e.to_string());
             }
         }
+        report.entries.push(entry);
+        self.report = Some(report.clone());
+        host::refresh_view("report");
+    }
+
+    // The same lines the report view shows, in the IDE log (Help → Show Log).
+    for entry in &report.entries {
+        let line = match (&entry.outcome, &entry.note) {
+            (Some(out), _) => format!(
+                "{} → 项目 {}/{}, {}, {}: {}",
+                entry.module,
+                entry.project_id,
+                entry.project_name,
+                entry.branch,
+                entry.apifox_module,
+                out.summary()
+            ),
+            (None, Some(note)) => format!("{} → 未导入：{note}", entry.module),
+            (None, None) => format!("{} → 未导入", entry.module),
+        };
+        host::log(
+            if entry.outcome.is_some() {
+                LogLevel::Info
+            } else {
+                LogLevel::Warn
+            },
+            &format!("{TITLE} {line}"),
+        );
     }
 
     let mut message = format!(
@@ -1114,28 +1514,49 @@ fn sync(ctx: &Invocation) -> Result<Option<String>, Error> {
         updated,
         failed
     );
+    if !hints.is_empty() {
+        message.push_str("；");
+        message.push_str(&hints.join("；"));
+    }
     if !notes.is_empty() {
         message.push_str("；");
         message.push_str(&notes.join("；"));
-        host::notify(NotificationLevel::Warning, TITLE, &message);
-    } else {
-        host::notify(NotificationLevel::Info, TITLE, &message);
     }
+    let level = if failed > 0 || !notes.is_empty() {
+        NotificationLevel::Warning
+    } else {
+        NotificationLevel::Info
+    };
+    host::notify(level, TITLE, &message);
+    self.report = Some(report);
+    host::refresh_view("report");
     Ok(Some(message))
+}
 }
 
 fn project_document(ctx: &Invocation) -> Result<(Project, apifox_core::model::ApiDoc), Error> {
     let project = ctx.project().ok_or("请先打开一个 Java 项目再运行该命令")?;
     let root = project.root().unwrap_or_default();
     let files = project.find_files("**/*.java", MAX_FILES)?;
-    let mut project_files: Vec<(String, String)> = Vec::new();
+    let mut rels: Vec<String> = Vec::new();
+    let mut locations: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for path in &files {
         let rel = relative_to_root(&root, path);
-        if let Ok(text) = project.read_file(path) {
-            project_files.push((rel, text));
+        if !is_doc_source(&rel) {
+            continue;
         }
+        locations.insert(rel.clone(), path.clone());
+        rels.push(rel);
     }
-    let doc = scan_project_files(&project_files);
+    let doc = scan_modules_scoped(
+        &rels,
+        |rel| locations.get(rel).and_then(|path| project.read_file(path).ok()),
+        &[String::new()],
+        &[],
+    )
+    .into_iter()
+    .next()
+    .expect("one document per module");
     if doc.endpoints.is_empty() {
         return Err("未找到 Spring Controller".into());
     }
@@ -1238,6 +1659,13 @@ fn call_apifox(call: &apifox::ApiCall, base: &str) -> Result<(u16, String), Erro
     Ok((response.status, response.text()))
 }
 
+/// Build output and tests are never API sources: skipping them keeps a big
+/// monorepo (thousands of generated `.java`) inside the host CPU budget.
+fn is_doc_source(path: &str) -> bool {
+    let p = path.replace('\\', "/").to_ascii_lowercase();
+    const SKIP: &[&str] = &["/target/", "/build/", "/out/", "/.git/", "/node_modules/", "/.idea/"];
+    !SKIP.iter().any(|s| p.contains(s)) && !p.contains("/src/test/")
+}
 fn relative_to_root(root: &str, path: &str) -> String {
     let root = root.replace('\\', "/");
     let path = path.replace('\\', "/");
@@ -1292,6 +1720,9 @@ fn mapping_from(v: &Value) -> Mapping {
         name: text(v, "name"),
         path: text(v, "path"),
         project_id: text(v, "projectId"),
+        team_id: v.get("teamId").and_then(Value::as_u64),
+        team_name: text(v, "teamName"),
+        project_name: text(v, "projectName"),
         branch_id: v.get("branchId").and_then(Value::as_u64),
         branch_name: text(v, "branchName"),
         module_id: v.get("moduleId").and_then(Value::as_u64),
@@ -1391,6 +1822,30 @@ fn folder_options(
         }
     }
 }
+/// Minimal HTML escape for the report view (sandboxed frame, no template engine).
+fn esc(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Folder for the report: names are only known while a project is loaded, so
+/// the report shows the root or the id it imported into.
+fn folder_report_label(id: Option<u64>) -> String {
+    match id {
+        None => "根目录".to_string(),
+        Some(id) => format!("目录 #{id}"),
+    }
+}
+
 fn folder_label(id: Option<u64>) -> String {
     id.map(|v| v.to_string()).unwrap_or_else(|| "根目录".into())
 }
@@ -1440,6 +1895,9 @@ fn save_mappings(root: &str, list: &[Mapping]) -> Result<(), Error> {
                 "name": m.name,
                 "path": m.path,
                 "projectId": m.project_id,
+                "teamId": m.team_id,
+                "teamName": m.team_name,
+                "projectName": m.project_name,
                 "branchId": m.branch_id,
                 "branchName": m.branch_name,
                 "moduleId": m.module_id,
@@ -1498,22 +1956,61 @@ fn migrate_legacy(root: &str) -> Vec<Mapping> {
 
 /// Documents for `rows`: endpoints per module, types from the whole project,
 /// with context-path and naming applied. Shared by sync and preview.
+struct ScanOutcome {
+    docs: Vec<apifox_core::model::ApiDoc>,
+    /// Reasons the result differs from what the mapping table literally says
+    /// (selection ignored, module path no longer on disk). Shown to the user.
+    notes: Vec<String>,
+    /// Java files read from the project, and how many live in the modules.
+    files: usize,
+    module_files: usize,
+}
+
 fn docs_for(
     project: &Project,
     root: &str,
     rows: &[Mapping],
     selected: &[String],
-) -> Result<Vec<apifox_core::model::ApiDoc>, Error> {
+) -> Result<ScanOutcome, Error> {
     let files = project.find_files("**/*.java", MAX_FILES)?;
-    let mut project_files: Vec<(String, String)> = Vec::new();
+    let mut rels: Vec<String> = Vec::new();
+    let mut locations: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for path in &files {
         let rel = relative_to_root(root, path);
-        if let Ok(text) = project.read_file(path) {
-            project_files.push((rel, text));
+        if !is_doc_source(&rel) {
+            continue;
         }
+        locations.insert(rel.clone(), path.clone());
+        rels.push(rel);
     }
-    let paths: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
-    let mut docs = apifox_core::scan_modules_selected(&project_files, &paths, selected);
+    let root_name = root.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or("");
+    let mut notes: Vec<String> = Vec::new();
+    let paths: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            let scope = apifox_core::module_scope(&rels, &row.path, root_name);
+            if scope.is_empty() && !row.path.is_empty() {
+                notes.push(format!(
+                    "{}：映射路径 {} 下没有文件，已按项目根目录扫描",
+                    row.name, row.path
+                ));
+            }
+            scope
+        })
+        .collect();
+    let scan = apifox_core::scan_modules_scoped_report(
+        &rels,
+        |rel| locations.get(rel).and_then(|path| project.read_file(path).ok()),
+        &paths,
+        selected,
+    );
+    if scan.selection_ignored {
+        notes.push(format!(
+            "选中项里没有接口，已按整个模块同步（模块内 {} 个 Java 文件）",
+            scan.module_files
+        ));
+    }
+    let mut docs = scan.docs;
     let contexts = context_paths(project, root);
     for (row, doc) in rows.iter().zip(docs.iter_mut()) {
         if let Some(prefix) = context_for(&row.path, &contexts) {
@@ -1521,7 +2018,12 @@ fn docs_for(
         }
         apifox_core::naming::apply(doc, apifox_core::naming::Naming::parse(&row.naming));
     }
-    Ok(docs)
+    Ok(ScanOutcome {
+        docs,
+        notes,
+        files: scan.files,
+        module_files: scan.module_files,
+    })
 }
 
 fn row_matches(module: &str, selected: &[String]) -> bool {
@@ -1615,3 +2117,95 @@ fn context_for(module: &str, contexts: &[(String, String)]) -> Option<String> {
 }
 
 register_plugin!(Main, views);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn html_of(report: ImportReport) -> String {
+        let main = Main { report: Some(report), ..Default::default() };
+        match main.report_view().body {
+            Body::Html(html) => html,
+            other => panic!("report view must be HTML, got {other:?}"),
+        }
+    }
+
+    fn entry(name: &str, outcome: Option<apifox::ImportOutcome>, note: Option<&str>) -> ImportEntry {
+        ImportEntry {
+            module: name.into(),
+            path: format!("erp/{name}"),
+            project_id: "8957701".into(),
+            project_name: "ERP".into(),
+            branch: "feature".into(),
+            apifox_module: "(默认模块)".into(),
+            endpoint_folder: "根目录".into(),
+            schema_folder: "目录 #12".into(),
+            endpoints: 2,
+            endpoint_list: vec!["GET /report/profit — 利润报表".into()],
+            outcome,
+            note: note.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn report_lists_each_module_and_totals_like_the_reference() {
+        let html = html_of(ImportReport {
+            entries: vec![
+                entry(
+                    "saas-erp",
+                    Some(apifox::ImportOutcome {
+                        created: 0,
+                        updated: 2,
+                        failed: 0,
+                        ignored: 0,
+                        schemas_created: 8,
+                        schemas_updated: 0,
+                        errors: Vec::new(),
+                    }),
+                    None,
+                ),
+                entry("saas-user", None, Some("HTTP 401：token invalid")),
+            ],
+            created: 0,
+            updated: 2,
+            ignored: 0,
+            failed: 1,
+            schemas_created: 8,
+            schemas_updated: 0,
+            scanned: "扫描 812 个 Java 文件（映射模块内 240 个）".into(),
+        });
+        // Target line: project id + name, branch, module, both folders.
+        assert!(html.contains("项目ID: 8957701"), "{html}");
+        assert!(html.contains("项目名称: ERP"));
+        assert!(html.contains("分支/版本: feature"));
+        assert!(html.contains("模块: (默认模块)"));
+        assert!(html.contains("接口路径: 根目录"));
+        assert!(html.contains("数据模型路径: 目录 #12"));
+        assert!(html.contains("导入成功"));
+        assert!(html.contains("GET /report/profit — 利润报表"));
+        // The failed module shows its reason instead of counters.
+        assert!(html.contains("⚠ HTTP 401：token invalid"), "{html}");
+        // Totals table, as in the reference console.
+        assert!(html.contains("Endpoints"));
+        assert!(html.contains("Schemas"));
+        assert!(html.contains("扫描 812 个 Java 文件"));
+        // Balanced markup: the frame shows raw HTML, so a stray tag breaks the panel.
+        assert_eq!(html.matches("<div").count(), html.matches("</div>").count(), "{html}");
+        assert_eq!(html.matches("<table").count(), html.matches("</table>").count());
+        assert_eq!(html.matches("<tr").count(), html.matches("</tr>").count());
+    }
+
+    #[test]
+    fn report_escapes_api_text_and_has_an_empty_state() {
+        let html = html_of(ImportReport {
+            entries: vec![entry("<script>x</script>", None, Some("a & b"))],
+            ..Default::default()
+        });
+        assert!(!html.contains("<script>"), "{html}");
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains("a &amp; b"));
+
+        let empty = Main::default().report_view();
+        assert!(matches!(empty.body, Body::Message(_)));
+    }
+}

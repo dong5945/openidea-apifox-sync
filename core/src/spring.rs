@@ -3,10 +3,10 @@
 //! Only the annotations that change the HTTP contract are interpreted; the
 //! scanner in `java` already turned the source text into classes/methods.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::java::{ann_attr, ann_first_string, ann_string, split_top_level, Ann, JavaClass, JavaField, JavaFile};
-use crate::model::{ApiDoc, Endpoint, Field, Param, ParamIn, Ty};
+use crate::model::{ApiDoc, Endpoint, Field, Param, ParamIn, Response, Ty};
 
 const WRAPPERS: &[&str] = &[
     "Result",
@@ -45,20 +45,71 @@ const SKIPPED_PARAMS: &[&str] = &[
 
 /// Every class of the project, by simple name: cross-module DTOs resolve.
 pub struct TypeIndex<'a> {
-    classes: HashMap<String, &'a JavaClass>,
-    known: HashSet<String>,
+    /// Canonical key (`Name` when unique, `pkg.Name` for duplicates).
+    by_key: HashMap<String, &'a JavaClass>,
+    by_simple: HashMap<String, Vec<&'a JavaClass>>,
 }
 
 impl<'a> TypeIndex<'a> {
     pub fn build(files: &'a [JavaFile]) -> Self {
-        let mut classes: HashMap<String, &JavaClass> = HashMap::new();
+        let refs: Vec<&JavaFile> = files.iter().collect();
+        Self::build_refs(&refs)
+    }
+
+    pub fn build_refs(files: &[&'a JavaFile]) -> Self {
+        let mut by_simple: HashMap<String, Vec<&JavaClass>> = HashMap::new();
         for file in files {
             for cls in &file.classes {
-                classes.entry(cls.name.clone()).or_insert(cls);
+                by_simple.entry(cls.name.clone()).or_default().push(cls);
             }
         }
-        let known = classes.keys().cloned().collect();
-        Self { classes, known }
+        let mut by_key: HashMap<String, &JavaClass> = HashMap::new();
+        for (name, list) in &by_simple {
+            for cls in list {
+                let key = if list.len() == 1 {
+                    name.clone()
+                } else {
+                    format!("{}.{}", cls.package, cls.name)
+                };
+                by_key.insert(key, *cls);
+            }
+        }
+        Self { by_key, by_simple }
+    }
+
+    /// Resolves a simple type name from `ctx`'s imports / package first.
+    fn resolve(&self, ctx: &JavaClass, simple: &str) -> Option<&'a JavaClass> {
+        let list = self.by_simple.get(simple)?;
+        if list.len() == 1 {
+            return Some(list[0]);
+        }
+        for import in &ctx.imports {
+            if import.ends_with(&format!(".{simple}")) {
+                if let Some(cls) = self.by_key.get(import) {
+                    return Some(*cls);
+                }
+            }
+        }
+        let same_package = format!("{}.{}", ctx.package, simple);
+        if let Some(cls) = self.by_key.get(&same_package) {
+            return Some(*cls);
+        }
+        list.first().copied()
+    }
+
+    /// The `$ref` key for a simple name, disambiguated by package when needed.
+    fn key_for(&self, ctx: &JavaClass, simple: &str) -> Option<String> {
+        let cls = self.resolve(ctx, simple)?;
+        let unique = self.by_simple.get(&cls.name).map(|v| v.len() == 1).unwrap_or(true);
+        Some(if unique {
+            cls.name.clone()
+        } else {
+            format!("{}.{}", cls.package, cls.name)
+        })
+    }
+
+    fn get(&self, key: &str) -> Option<&'a JavaClass> {
+        self.by_key.get(key).copied()
     }
 }
 
@@ -87,7 +138,7 @@ pub fn scan_indexed(index: &TypeIndex, endpoint_files: &[&JavaFile]) -> ApiDoc {
                 }
                 for (method, sub) in mappings {
                     let path = join_path(&base, &sub);
-                    endpoints.extend(build_endpoint(cls, m, &method, &path, &index.known));
+                    endpoints.extend(build_endpoint(cls, m, &method, &path, index));
                 }
             }
         }
@@ -96,7 +147,7 @@ pub fn scan_indexed(index: &TypeIndex, endpoint_files: &[&JavaFile]) -> ApiDoc {
 
     let mut doc = ApiDoc::new("API 文档");
     doc.endpoints = endpoints;
-    doc.schemas = collect_schemas(&doc.endpoints, &index.classes, &index.known);
+    doc.schemas = collect_schemas(&doc.endpoints, index);
     doc
 }
 
@@ -195,7 +246,7 @@ fn build_endpoint(
     m: &crate::java::JavaMethod,
     method: &str,
     path: &str,
-    known: &HashSet<String>,
+    index: &TypeIndex,
 ) -> Vec<Endpoint> {
     let mut params = Vec::new();
     let mut body: Option<(String, Ty)> = None;
@@ -207,7 +258,7 @@ fn build_endpoint(
         }
         if let Some(a) = p.anns.iter().find(|a| a.name == "RequestBody") {
             let _ = a;
-            body = Some(("application/json".into(), parse_ty(&p.ty, known, true)));
+            body = Some(("application/json".into(), parse_ty(&p.ty, index, cls, true)));
             continue;
         }
         if p.anns.iter().any(|a| a.name == "RequestPart") {
@@ -240,12 +291,12 @@ fn build_endpoint(
         } else if let Some(a) = p.anns.iter().find(|a| a.name == "CookieParam") {
             (ParamIn::Cookie, Some(a), ann_name(a).unwrap_or_else(|| p.name.clone()))
         } else {
-            let simple = is_simple(&p.ty, known);
+            let simple = is_simple(&p.ty, index, cls);
             let read_method = matches!(method, "GET" | "DELETE" | "HEAD" | "OPTIONS");
             if simple || read_method {
                 (ParamIn::Query, None, p.name.clone())
             } else {
-                body = Some(("application/json".into(), parse_ty(&p.ty, known, true)));
+                body = Some(("application/json".into(), parse_ty(&p.ty, index, cls, true)));
                 continue;
             }
         };
@@ -286,7 +337,7 @@ fn build_endpoint(
             location,
             required,
             description,
-            ty: parse_ty(&p.ty, known, false),
+            ty: parse_ty(&p.ty, index, cls, false),
             default,
         });
     }
@@ -294,7 +345,7 @@ fn build_endpoint(
     if body.is_none() && !matches!(method, "GET" | "DELETE" | "HEAD" | "OPTIONS") {
         // No @RequestBody: Spring binds a single complex parameter from the body.
         if let Some(p) = m.params.iter().find(|p| {
-            is_complex(&p.ty, known)
+            is_complex(&p.ty, index, cls)
                 && !SKIPPED_PARAMS.contains(&base_type(&p.ty).as_str())
                 && p.anns.iter().all(|a| {
                     !matches!(
@@ -303,15 +354,45 @@ fn build_endpoint(
                     )
                 })
         }) {
-            body = Some(("application/json".into(), parse_ty(&p.ty, known, true)));
+            body = Some(("application/json".into(), parse_ty(&p.ty, index, cls, true)));
         }
     }
 
-    let response = if base_type(&m.ret) == "void" {
+    let return_type = if base_type(&m.ret) == "void" {
         None
     } else {
-        Some(parse_ty(&m.ret, known, true))
+        Some(parse_ty(&m.ret, index, cls, true))
     };
+    let media = response_media(&m.anns, &cls.anns, return_type.as_ref());
+    let mut declared = api_response_entries(&m.anns);
+    if !declared.iter().any(|(code, _)| code.starts_with('2')) {
+        declared.insert(0, ("200".to_string(), String::new()));
+    }
+    let responses = declared
+        .into_iter()
+        .map(|(code, description)| {
+            if code.starts_with('2') {
+                Response {
+                    description: if description.is_empty() {
+                        m.doc.ret.clone()
+                    } else {
+                        description
+                    },
+                    media: media.clone(),
+                    ty: return_type.clone(),
+                    code,
+                }
+            } else {
+                // An error entry without a declared body: description only.
+                Response {
+                    code,
+                    description: "No Content".into(),
+                    media: media.clone(),
+                    ty: None,
+                }
+            }
+        })
+        .collect();
 
     let summary = operation_summary(&m.anns)
         .filter(|s| !s.is_empty())
@@ -345,14 +426,13 @@ fn build_endpoint(
         operation_id,
         params,
         body,
-        response,
+        responses,
         deprecated: m.doc.deprecated
             || m.anns.iter().any(|a| a.name == "Deprecated")
             || m.anns.iter().any(|a| {
                 a.name == "Operation"
                     && (a.args.contains("deprecated = true") || a.args.contains("deprecated=true"))
             }),
-        response_description: response_description(&m.anns).unwrap_or_else(|| "成功".into()),
         line: m.line,
     }]
 }
@@ -418,15 +498,110 @@ fn operation_description(anns: &[Ann]) -> Option<String> {
     None
 }
 
-fn response_description(anns: &[Ann]) -> Option<String> {
-    for a in anns {
-        if matches!(a.name.as_str(), "ApiResponse" | "ApiResponses") {
-            if let Some(d) = ann_string(&a.args, "description") {
-                return Some(d);
+fn schema_example(anns: &[Ann]) -> Option<String> {
+    for ann in anns {
+        if matches!(
+            ann.name.as_str(),
+            "Schema" | "ApiModelProperty" | "ApiParam" | "Parameter"
+        ) {
+            if let Some(value) = ann_string(&ann.args, "example") {
+                if !value.is_empty() {
+                    return Some(value);
+                }
             }
         }
     }
     None
+}
+/// `@ApiResponse(code = 401, message = "…")` and Swagger 3
+/// `@ApiResponse(responseCode = "401", description = "…")`.
+fn api_response_entries(anns: &[Ann]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for ann in anns {
+        match ann.name.as_str() {
+            "ApiResponse" => {
+                if let Some(entry) = parse_api_response(&ann.args) {
+                    out.push(entry);
+                }
+            }
+            "ApiResponses" => {
+                let mut rest = ann.args.as_str();
+                while let Some(pos) = rest.find("@ApiResponse") {
+                    rest = &rest[pos + "@ApiResponse".len()..];
+                    let Some(open) = rest.find('(') else { break };
+                    let body = &rest[open + 1..];
+                    let Some(end) = closing_paren(body) else { break };
+                    if let Some(entry) = parse_api_response(&body[..end]) {
+                        out.push(entry);
+                    }
+                    rest = &body[end..];
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn parse_api_response(args: &str) -> Option<(String, String)> {
+    let code = ann_string(args, "responseCode")
+        .or_else(|| ann_attr(args, "code").map(|v| v.trim().trim_matches('"').to_string()))
+        .unwrap_or_else(|| "200".to_string());
+    let description = ann_string(args, "description")
+        .or_else(|| ann_string(args, "message"))
+        .unwrap_or_default();
+    Some((code, description))
+}
+
+fn closing_paren(text: &str) -> Option<usize> {
+    let mut depth = 1i32;
+    let mut quote: Option<char> = None;
+    for (i, c) in text.char_indices() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn response_media(anns: &[Ann], class_anns: &[Ann], ret: Option<&Ty>) -> String {
+    let joined = anns
+        .iter()
+        .chain(class_anns.iter())
+        .map(|a| a.args.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (needle, media) in [
+        ("application/xml", "application/xml"),
+        ("APPLICATION_XML", "application/xml"),
+        ("TEXT_XML", "application/xml"),
+        ("text/plain", "text/plain"),
+        ("TEXT_PLAIN", "text/plain"),
+        ("text/html", "text/html"),
+        ("octet-stream", "application/octet-stream"),
+    ] {
+        if joined.contains(needle) {
+            return media.to_string();
+        }
+    }
+    if matches!(ret, Some(Ty::Binary)) {
+        return "application/octet-stream".to_string();
+    }
+    "application/json".to_string()
 }
 
 /// `@PathParam("id")`: a positional string only when no `key = value` is present.
@@ -499,9 +674,9 @@ pub fn generic_args(raw: &str) -> Vec<String> {
     split_top_level(&raw[open + 1..close], ',')
 }
 
-fn is_simple(raw: &str, known: &HashSet<String>) -> bool {
+fn is_simple(raw: &str, index: &TypeIndex, ctx: &JavaClass) -> bool {
     let base = base_type(raw);
-    if known.contains(&base) {
+    if index.resolve(ctx, &base).is_some() {
         return false;
     }
     !matches!(
@@ -510,12 +685,12 @@ fn is_simple(raw: &str, known: &HashSet<String>) -> bool {
     )
 }
 
-fn is_complex(raw: &str, known: &HashSet<String>) -> bool {
-    !is_simple(raw, known)
+fn is_complex(raw: &str, index: &TypeIndex, ctx: &JavaClass) -> bool {
+    !is_simple(raw, index, ctx)
 }
 
 /// Resolves a Java type expression into the schema model.
-pub fn parse_ty(raw: &str, known: &HashSet<String>, unwrap: bool) -> Ty {
+pub fn parse_ty(raw: &str, index: &TypeIndex, ctx: &JavaClass, unwrap: bool) -> Ty {
     let raw = raw.trim();
     if raw.is_empty() {
         return Ty::Any;
@@ -523,11 +698,11 @@ pub fn parse_ty(raw: &str, known: &HashSet<String>, unwrap: bool) -> Ty {
     if unwrap {
         let inner = unwrap_wrapper(raw);
         if inner != raw {
-            return parse_ty(&inner, known, false);
+            return parse_ty(&inner, index, ctx, false);
         }
     }
     if let Some(stripped) = raw.strip_suffix("[]") {
-        return Ty::Array(Box::new(parse_ty(stripped, known, false)));
+        return Ty::Array(Box::new(parse_ty(stripped, index, ctx, false)));
     }
     let base = base_type(raw);
     let args = generic_args(raw);
@@ -540,17 +715,17 @@ pub fn parse_ty(raw: &str, known: &HashSet<String>, unwrap: bool) -> Ty {
         "MultipartFile" | "File" | "Path" | "Resource" | "InputStream" => Ty::Binary,
         "List" | "Set" | "Collection" | "Iterable" | "Queue" | "Deque" | "Stream" | "ArrayList"
         | "LinkedList" | "HashSet" => match args.first() {
-            Some(a) => Ty::Array(Box::new(parse_ty(a, known, false))),
+            Some(a) => Ty::Array(Box::new(parse_ty(a, index, ctx, false))),
             None => Ty::Array(Box::new(Ty::Any)),
         },
         "Optional" => match args.first() {
-            Some(a) => parse_ty(a, known, false),
+            Some(a) => parse_ty(a, index, ctx, false),
             None => Ty::Any,
         },
         b if PAGE_TYPES.contains(&b) => {
             let item = args
                 .first()
-                .map(|a| parse_ty(a, known, false))
+                .map(|a| parse_ty(a, index, ctx, false))
                 .unwrap_or(Ty::Any);
             Ty::Object(vec![
                 Field::new("records", Ty::Array(Box::new(item)), true, "当前页数据"),
@@ -561,16 +736,14 @@ pub fn parse_ty(raw: &str, known: &HashSet<String>, unwrap: bool) -> Ty {
             ])
         }
         "Map" | "HashMap" | "JSONObject" | "Object" | "T" | "?" => Ty::Any,
-        b if known.contains(b) => Ty::Ref(b.to_string()),
+        b if index.resolve(ctx, b).is_some() => Ty::Ref(
+            index.key_for(ctx, b).unwrap_or_else(|| b.to_string()),
+        ),
         _ => Ty::Any,
     }
 }
 
-fn collect_schemas(
-    endpoints: &[Endpoint],
-    classes: &HashMap<String, &JavaClass>,
-    known: &HashSet<String>,
-) -> BTreeMap<String, Ty> {
+fn collect_schemas(endpoints: &[Endpoint], index: &TypeIndex) -> BTreeMap<String, Ty> {
     let mut schemas = BTreeMap::new();
     let mut queue: Vec<String> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -582,16 +755,18 @@ fn collect_schemas(
         if let Some((_, ty)) = &ep.body {
             collect_refs(ty, &mut queue);
         }
-        if let Some(ty) = &ep.response {
-            collect_refs(ty, &mut queue);
+        for response in &ep.responses {
+            if let Some(ty) = &response.ty {
+                collect_refs(ty, &mut queue);
+            }
         }
     }
     while let Some(name) = queue.pop() {
         if !seen.insert(name.clone()) {
             continue;
         }
-        let Some(cls) = classes.get(&name) else { continue };
-        let ty = class_schema(cls, known, &mut queue);
+        let Some(cls) = index.get(&name) else { continue };
+        let ty = class_schema(cls, index, &mut queue, &mut Vec::new());
         schemas.insert(name, ty);
     }
     schemas
@@ -610,16 +785,41 @@ fn collect_refs(ty: &Ty, out: &mut Vec<String>) {
     }
 }
 
-fn class_schema(cls: &JavaClass, known: &HashSet<String>, queue: &mut Vec<String>) -> Ty {
+fn class_schema(
+    cls: &JavaClass,
+    index: &TypeIndex,
+    queue: &mut Vec<String>,
+    path: &mut Vec<String>,
+) -> Ty {
     if !cls.enum_values.is_empty() {
         return Ty::Enum(cls.enum_values.clone());
     }
-    let mut fields = Vec::new();
+    if path.iter().any(|n| n == &cls.name) {
+        return Ty::Object(Vec::new());
+    }
+    path.push(cls.name.clone());
+    // Superclass fields come first, like the reference implementation.
+    let mut fields: Vec<Field> = Vec::new();
+    for base in &cls.bases {
+        let Some(key) = index.key_for(cls, base) else { continue };
+        let Some(base_cls) = index.get(&key) else { continue };
+        if let Ty::Object(base_fields) = class_schema(base_cls, index, queue, path) {
+            for f in base_fields {
+                if !fields.iter().any(|x| x.name == f.name) {
+                    fields.push(f);
+                }
+            }
+        }
+    }
     for f in &cls.fields {
         if is_hidden(f) {
             continue;
         }
-        let ty = parse_ty(&f.ty, known, false);
+        let name = field_name(f);
+        if fields.iter().any(|x| x.name == name) {
+            continue;
+        }
+        let ty = parse_ty(&f.ty, index, cls, false);
         collect_refs(&ty, queue);
         let required = !PRIMITIVE_REQUIRED.contains(&base_type(&f.ty).as_str())
             && f.anns.iter().any(|a| {
@@ -633,10 +833,14 @@ fn class_schema(cls: &JavaClass, known: &HashSet<String>, queue: &mut Vec<String
         } else {
             f.doc.clone()
         };
-        let mut field = Field::new(field_name(f), ty, required, description);
+        let mut field = Field::new(name, ty, required, description);
+        if let Some(example) = schema_example(&f.anns) {
+            field.example = example;
+        }
         apply_constraints(&mut field, &f.anns);
         fields.push(field);
     }
+    path.pop();
     Ty::Object(fields)
 }
 
@@ -699,7 +903,7 @@ fn apply_constraints(field: &mut Field, anns: &[Ann]) {
             "Pattern" => {
                 field.pattern = ann_string(&a.args, "regexp")
                     .or_else(|| ann_first_string(a))
-                    .map(|p| unescape_java(&p));
+                    .map(|p| unescape_java(p.as_str()));
             }
             "Email" => field.format = Some("email".into()),
             _ => {}

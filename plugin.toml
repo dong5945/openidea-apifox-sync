@@ -1,8 +1,16 @@
 id = "lidengyin.apifox-sync"
 name = "Apifox Sync"
-version = "0.10.1"
-description = "读取项目里的 Spring Controller 源码，生成 OpenAPI 3.0 并同步到 Apifox 项目；无需启动服务，不用 Swagger。"
-authors = ["acme"]
+version = "0.11.1"
+description = "读取项目里的 Spring Controller 源码，生成 OpenAPI 3.0 并同步到 Apifox 项目：无需启动服务、不用 Swagger，按代码模块映射项目/分支/模块/目录，同步后给出每个模块的导入结果统计。"
+change-notes = """
+0.11.1
+- 映射：读 pom.xml / settings.gradle 检测代码模块；团队 → Apifox 项目、分支/版本、模块、接口与数据模型目录全部下拉选择，覆盖策略与参数命名转换可配。
+- 同步：同步全部只跑启用的行；在项目视图右键某个 .java 或目录时只导出选中范围内的接口（类型仍按全项目解析）。
+- 结果：导入结果按模块列出项目/分支/模块/目录与接口清单，含 Created / Updated / Ignored / Failed 计数，失败的模块显示原因。
+- 导出：OpenAPI YAML、OpenAPI JSON、Postman Collection。
+- 配置：项目根 .apifox-sync.json 可一键导入全部映射。
+"""
+authors = ["lidengyin"]
 homepage = "https://github.com/lidengyin/openidea-apifox-sync"
 license = "MIT"
 categories = ["frameworks", "tools"]
@@ -64,6 +72,15 @@ group = "apifox"
 [[contributes.views]]
 id = "mapping"
 title = "映射"
+icon = "icon.svg"
+location = "right"
+group = "apifox"
+
+# Upload result: the per-module import report the reference plugin prints into
+# its console (project/branch/module/folders + created/updated/ignored/failed).
+[[contributes.views]]
+id = "report"
+title = "导入结果"
 icon = "icon.svg"
 location = "right"
 group = "apifox"

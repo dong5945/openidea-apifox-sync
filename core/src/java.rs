@@ -61,6 +61,12 @@ pub struct JavaMethod {
 #[derive(Debug, Clone, PartialEq)]
 pub struct JavaClass {
     pub name: String,
+    /// Declaring package (`package com.x;`), empty for default.
+    pub package: String,
+    /// Explicit imports of the declaring file.
+    pub imports: Vec<String>,
+    /// `extends` / `implements` base types, generics stripped.
+    pub bases: Vec<String>,
     pub anns: Vec<Ann>,
     pub doc: Doc,
     pub fields: Vec<JavaField>,
@@ -73,17 +79,21 @@ pub struct JavaClass {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct JavaFile {
     pub classes: Vec<JavaClass>,
+    pub package: String,
+    pub imports: Vec<String>,
 }
 
 struct Scanner<'a> {
     s: &'a [char],
     i: usize,
     line: u32,
+    package: String,
+    imports: Vec<String>,
 }
 
 impl<'a> Scanner<'a> {
     fn new(s: &'a [char]) -> Self {
-        Self { s, i: 0, line: 1 }
+        Self { s, i: 0, line: 1, package: String::new(), imports: Vec::new() }
     }
 
     fn eof(&self, end: usize) -> bool {
@@ -354,9 +364,30 @@ struct Members {
 /// skipped), which is what documentation of controllers and DTOs needs.
 pub fn parse_file(src: &str) -> JavaFile {
     let chars: Vec<char> = src.chars().collect();
+    let (package, imports) = header_info(&chars);
     let mut sc = Scanner::new(&chars);
+    sc.package = package.clone();
+    sc.imports = imports.clone();
     let members = parse_scope(&mut sc, chars.len());
-    JavaFile { classes: members.classes }
+    JavaFile { classes: members.classes, package, imports }
+}
+
+fn header_info(s: &[char]) -> (String, Vec<String>) {
+    let text: String = s.iter().collect();
+    let mut package = String::new();
+    let mut imports = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("package ") {
+            package = rest.trim_end_matches(';').trim().to_string();
+        } else if let Some(rest) = t.strip_prefix("import ") {
+            let value = rest.trim_end_matches(';').trim();
+            if !value.is_empty() && !value.ends_with('*') {
+                imports.push(value.to_string());
+            }
+        }
+    }
+    (package, imports)
 }
 
 fn parse_scope(sc: &mut Scanner, end: usize) -> Members {
@@ -386,6 +417,9 @@ fn parse_scope(sc: &mut Scanner, end: usize) -> Members {
                         let inner = parse_scope(sc, end);
                         out.classes.push(JavaClass {
                             name,
+                            package: sc.package.clone(),
+                            bases: base_types(&text),
+                            imports: sc.imports.clone(),
                             anns,
                             doc,
                             fields: inner.fields,
@@ -397,6 +431,9 @@ fn parse_scope(sc: &mut Scanner, end: usize) -> Members {
                         let body = sc.block_text();
                         out.classes.push(JavaClass {
                             name,
+                            package: sc.package.clone(),
+                            bases: base_types(&text),
+                            imports: sc.imports.clone(),
                             anns,
                             doc,
                             fields: Vec::new(),
@@ -426,7 +463,8 @@ fn parse_scope(sc: &mut Scanner, end: usize) -> Members {
                 sc.skip_block();
             }
             ';' => {
-                if text.contains('(') {
+                let has_initializer = strip_initializer(&text).len() != text.len();
+                if !has_initializer && text.contains('(') {
                     if let Some((name, ret, params)) = signature(&text) {
                         if !name.is_empty() && !ret.is_empty() {
                             out.methods.push(JavaMethod {
@@ -440,13 +478,15 @@ fn parse_scope(sc: &mut Scanner, end: usize) -> Members {
                         }
                     }
                 } else if let Some((ty, name)) = field_decl(&text) {
-                    out.fields.push(JavaField {
-                        name,
-                        ty,
-                        doc: doc.summary.clone(),
-                        anns,
-                        line: header.line,
-                    });
+                    if !has_modifier(&text, "static") {
+                        out.fields.push(JavaField {
+                            name,
+                            ty,
+                            doc: doc.summary.clone(),
+                            anns,
+                            line: header.line,
+                        });
+                    }
                 }
             }
             '}' => break,
@@ -472,6 +512,45 @@ fn type_decl(text: &str) -> Option<(&'static str, String)> {
     None
 }
 
+/// `class Foo<T> extends Base<T> implements A, B` -> `["Base", "A", "B"]`.
+fn base_types(text: &str) -> Vec<String> {
+    let mut clean = String::new();
+    let mut depth = 0i32;
+    for c in text.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            _ if depth == 0 => clean.push(c),
+            _ => {}
+        }
+    }
+    let words: Vec<&str> = clean
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        if words[i] == "extends" || words[i] == "implements" {
+            i += 1;
+            while i < words.len() && words[i] != "extends" && words[i] != "implements" {
+                let name = words[i].trim_matches(|c: char| c == '{' || c == '}');
+                if !name.is_empty() {
+                    out.push(name.to_string());
+                }
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out.dedup();
+    out
+}
+
+fn has_modifier(text: &str, modifier: &str) -> bool {
+    text.split(|c: char| !is_ident(c)).any(|w| w == modifier)
+}
 const MODIFIERS: &[&str] = &[
     "public",
     "protected",
@@ -526,6 +605,31 @@ fn skip_annotation(s: &str) -> Option<&str> {
         Some(rest)
     }
 }
+/// `List<X> rows = new ArrayList<>()` -> `List<X> rows`.
+fn strip_initializer(text: &str) -> &str {
+    let chars: Vec<char> = text.chars().collect();
+    let mut depth = 0i32;
+    let mut in_str: Option<char> = None;
+    for (i, c) in chars.iter().copied().enumerate() {
+        if let Some(q) = in_str {
+            if c == q {
+                in_str = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => in_str = Some(c),
+            '<' | '(' | '[' | '{' => depth += 1,
+            '>' | ')' | ']' | '}' => depth -= 1,
+            '=' if depth == 0 => {
+                let byte = text.char_indices().nth(i).map(|(b, _)| b).unwrap_or(text.len());
+                return text[..byte].trim_end();
+            }
+            _ => {}
+        }
+    }
+    text
+}
 pub fn split_top_level(s: &str, sep: char) -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = String::new();
@@ -571,6 +675,7 @@ pub fn split_top_level(s: &str, sep: char) -> Vec<String> {
 }
 
 fn field_decl(text: &str) -> Option<(String, String)> {
+    let text = strip_initializer(text);
     if text.starts_with("package ") || text.starts_with("import ") {
         return None;
     }
@@ -955,6 +1060,13 @@ public class UserController {
 }
 "#;
 
+    #[test]
+    fn drops_field_initializer() {
+        assert_eq!(
+            field_decl("private List<ProfitColumnVO> columns = new ArrayList<>()"),
+            Some(("List<ProfitColumnVO>".to_string(), "columns".to_string()))
+        );
+    }
     #[test]
     fn parses_class_annotations_fields_and_methods() {
         let file = parse_file(SRC);

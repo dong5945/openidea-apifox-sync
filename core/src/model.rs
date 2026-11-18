@@ -35,6 +35,8 @@ pub struct Field {
     pub max_len: Option<u64>,
     pub pattern: Option<String>,
     pub format: Option<String>,
+    /// `example` from `@Schema` / `@ApiModelProperty`; empty = none.
+    pub example: String,
 }
 
 impl Field {
@@ -51,6 +53,7 @@ impl Field {
             max_len: None,
             pattern: None,
             format: None,
+            example: String::new(),
         }
     }
 }
@@ -85,6 +88,17 @@ pub struct Param {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Response {
+    /// HTTP status code as text (`"200"`, `"401"` ...).
+    pub code: String,
+    pub description: String,
+    /// Media type of this response body.
+    pub media: String,
+    /// `None` = no body (description only).
+    pub ty: Option<Ty>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Endpoint {
     pub method: String,
     pub path: String,
@@ -95,9 +109,8 @@ pub struct Endpoint {
     pub params: Vec<Param>,
     /// media type -> schema
     pub body: Option<(String, Ty)>,
-    pub response: Option<Ty>,
-    /// `@ApiResponse(description=…)` or "成功".
-    pub response_description: String,
+    /// Declared `@ApiResponse` entries plus the default success response.
+    pub responses: Vec<Response>,
     pub deprecated: bool,
     /// 1-based source line of the handler, for IDE navigation.
     pub line: u32,

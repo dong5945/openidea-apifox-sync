@@ -37,18 +37,23 @@ pub fn render(doc: &ApiDoc) -> String {
                 "requestBody".into(),
                 json!({
                     "required": true,
-                    "content": { mime.clone(): { "schema": schema_with_example(ty) } }
+                    "content": { mime.clone(): { "schema": schema_value(ty) } }
                 }),
             );
         }
-        let response = match &ep.response {
-            Some(ty) => json!({
-                "description": ep.response_description,
-                "content": { "application/json": { "schema": schema_with_example(ty) } }
-            }),
-            None => json!({ "description": ep.response_description }),
-        };
-        op.insert("responses".into(), json!({ "200": response }));
+        let mut responses = Map::new();
+        for r in &ep.responses {
+            let value = match &r.ty {
+                Some(ty) => {
+                    let mut content = Map::new();
+                    content.insert(r.media.clone(), json!({ "schema": schema_value(ty) }));
+                    json!({ "description": r.description, "content": Value::Object(content) })
+                }
+                None => json!({ "description": r.description }),
+            };
+            responses.insert(r.code.clone(), value);
+        }
+        op.insert("responses".into(), Value::Object(responses));
 
         let entry = paths.entry(ep.path.clone()).or_insert_with(|| json!({}));
         if let Value::Object(map) = entry {
@@ -105,7 +110,7 @@ fn default_value(raw: &str, ty: &Ty) -> Value {
     }
 }
 
-/// A sample value so Apifox shows something instead of `null`.
+/// A sample value so Apifox shows something instead of ull`.
 pub fn example_value(ty: &Ty) -> Option<Value> {
     Some(match ty {
         Ty::String => json!("示例"),
@@ -126,19 +131,6 @@ pub fn example_value(ty: &Ty) -> Option<Value> {
     })
 }
 
-/// `schema_value` plus `example` (never on a `$ref`, whose siblings 3.0 ignores).
-pub fn schema_with_example(ty: &Ty) -> Value {
-    let mut value = schema_value(ty);
-    if let Some(obj) = value.as_object_mut() {
-        if obj.contains_key("$ref") {
-            return value;
-        }
-        if let Some(example) = example_value(ty) {
-            obj.insert("example".into(), example);
-        }
-    }
-    value
-}
 pub fn schema_value(ty: &Ty) -> Value {
     match ty {
         Ty::String => json!({ "type": "string" }),
@@ -154,6 +146,7 @@ pub fn schema_value(ty: &Ty) -> Value {
         Ty::Any => json!({}),
     }
 }
+
 
 fn object_value(fields: &[Field]) -> Value {
     let mut props = Map::new();
@@ -187,8 +180,8 @@ fn object_value(fields: &[Field]) -> Value {
                 if let Some(fmt) = &f.format {
                     obj.insert("format".into(), json!(fmt));
                 }
-                if let Some(example) = example_value(&f.ty) {
-                    obj.insert("example".into(), example);
+                if !f.example.is_empty() {
+                    obj.insert("example".into(), default_value(&f.example, &f.ty));
                 }
             }
         }

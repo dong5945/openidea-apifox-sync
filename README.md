@@ -90,6 +90,9 @@ core/             纯 Rust 核心（无 host 调用，独立可测）
   `{"mappings":[{"name":"saas-erp","path":"saas-erp","projectId":"8957701","branchId":1,"moduleId":2}]}`
   ，映射页点「从配置导入」整体覆盖。
 - **预览变更**：用上次同步时保存的内容哈希逐模块比较，报告「N 个模块有变更」；不访问网络。
+- **导入结果**（0.11.0）：同步一开始就打开「导入结果」标签，每传完一个模块刷新一次——按模块列出
+  项目 ID/名称、分支、模块、接口目录、数据模型目录、接口清单，以及 Endpoints/Schemas 的
+  Created/Updated/Ignored/Failed 计数表（与参考插件控制台输出同一份信息）；失败的模块显示原因。
 - **测试连接**：设置页按钮，用当前服务器 + 令牌读映射里的第一个项目。
 
 ## 已验证
@@ -109,24 +112,26 @@ cargo run -- tests/fixtures --json out/openapi.json --project 3760990 --branch 4
 $ rustup target add wasm32-wasip2          # 本机已装
 $ cargo build --release --target wasm32-wasip2
    Finished `release` profile
-$ cp target/wasm32-wasip2/release/openidea_plugin_acme_apifox_sync.wasm dist/plugin.wasm
+$ cp target/wasm32-wasip2/release/openidea_plugin_lidengyin_apifox_sync.wasm dist/plugin.wasm
 $ openidea-plugin check .
-acme.apifox-sync 0.10.1 — Apifox Sync
-  code: dist/plugin.wasm (541.9 KiB, plugin API 1.9)
+lidengyin.apifox-sync 0.11.1 — Apifox Sync
+  code: dist/plugin.wasm (600.4 KiB, plugin API 1.9)
   categories: frameworks, tools
-  contributes 3 × commands
-  contributes 3 × menus
+  contributes 5 × commands
+  contributes 5 × menus
   contributes 1 × secrets
-  contributes 2 × views
+  contributes 3 × views
   capability project.write (required, High risk): Create and change files in the open project
   capability net:api.apifox.com (required, Medium risk): Connect to api.apifox.com (from the machine the project is on)
+  capability net:ask (required, Medium risk): Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones
   capability secrets (required, Medium risk): Store secrets in the system keychain
   capability project.read (required, Low risk): Read files in the open project
   capability storage (required, Low risk): Store its own data
 ok
 ```
 
-`dist/plugin.wasm` 已随仓库保留，可直接 `Install Plugin from Disk`。
+`dist/` 不入库（`.gitignore`）；分发用签名包 `dist/lidengyin.apifox-sync-<ver>.oiplugin`，
+安装时齿轮菜单选「从插件包文件安装…」（「从磁盘安装插件…」是文件夹选择器，只认含 `plugin.toml` 的目录）。
 
 ### 本机是怎么跑的（Windows 无官方 CLI）
 

@@ -104,6 +104,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "openidea-plugin"
 version = "0.1.0"
+source = "git+https://github.com/l0ng-ai/openidea?tag=v0.1.46#ac3c564249d5acd2466f9ef2c19d20ed4458d4c5"
 dependencies = [
  "serde",
  "serde_json",
@@ -112,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "openidea-plugin-lidengyin-apifox-sync"
-version = "0.10.1"
+version = "0.11.1"
 dependencies = [
  "apifox-core",
  "openidea-plugin",
