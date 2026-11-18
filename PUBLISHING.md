@@ -1,104 +1,74 @@
-# 发布到 OpenIDEA 插件市场
+# 发布到 OpenIDEA 插件市场（lidengyin/openidea-apifox-sync）
 
-本地已验证可打包签名（0.10.1）：
+## 当前状态
 
-```
-dist/acme.apifox-sync-0.10.1.oiplugin   207.8 KiB
-sha256 26f08c2f8cb93bfc1de682266d5a06dbe4e80d30dc9168a046ccb8c93606d331
-签名公钥 8oG5Be7v1eVC5djl5JahY89IyRu+PF/6OUG/Tb6E8d4=
-```
-
-私钥在 `C:\Users\DELL\.openidea-keys\apifox-sync.key`，**不要提交到任何仓库**，自行备份。
-
-## 0. 发布前必须满足
-
-| 要求 | 现状 |
+| 项 | 状态 |
 | --- | --- |
-| 公开源码仓库 + 开源协议 | 需要建仓库；`LICENSE` 已放好（MIT） |
-| README 说明功能与每项高危能力用途 | `README.md` 的「能力与用途」已覆盖 |
-| 无混淆/压缩代码 | 纯 Rust 源码构建，满足 |
-| 插件 id = `<publisher>.<name>` | 当前 `acme.apifox-sync`，`acme` 是占位名，建议改成你的 GitHub 用户名 |
-| 签名包 | 已用 `pack` 生成 |
+| 插件 id | `lidengyin.apifox-sync`（已从占位 `acme` 改好） |
+| 源码仓库 | https://github.com/lidengyin/openidea-apifox-sync（已存在，公开，空） |
+| 本地 git | 已 `init` + 首次提交（26 个文件），remote 已指向上面的仓库 |
+| 推送 | **未成功**：本机到 github.com:443 连不通，需要你在有代理的环境执行 `git push` |
+| 签名密钥 | 私钥 `C:\Users\DELL\.openidea-keys\apifox-sync.key`（勿提交、自行备份） |
+| 公钥 | `8oG5Be7v1eVC5djl5JahY89IyRu+PF/6OUG/Tb6E8d4=` |
+| 安装包 | `dist/lidengyin.apifox-sync-0.10.1.oiplugin`（208.5 KiB，已签名） |
+| sha256 | `e44c7600500b5355a12c38e045b791552e7b8c362f9615107b1909646d773ec5` |
+| 市场 PR 文件 | `../openidea-plugins-pr/publishers/lidengyin.toml`、`plugins/lidengyin.apifox-sync.toml` |
 
-改 publisher 的做法（例：`myname`）：
+## 1. 推送源码
 
-1. `plugin.toml` 里 `id = "myname.apifox-sync"`；
-2. 重新 `openidea-plugin build` 与 `pack --publisher myname`；
-3. 市场索引里 publisher 文件也用 `myname`。
-
-## 1. 本机打包命令
+在本机（或任意能访问 github 的机器）执行：
 
 ```sh
-# CLI 在 WSL 里跑（Windows 无原生包）
-openidea-plugin keygen ~/.openidea-keys/apifox-sync.key     # 只做一次
-openidea-plugin build
-openidea-plugin pack . --key ~/.openidea-keys/apifox-sync.key \
-  --publisher <publisher> --out dist/<publisher>.apifox-sync-<version>.oiplugin
-openidea-plugin check dist/<publisher>.apifox-sync-<version>.oiplugin
-sha256sum dist/<publisher>.apifox-sync-<version>.oiplugin
+cd apifox-openidea
+git push -u origin main
 ```
 
-`pack` 会先跑一遍 `check`，输出 `ok` 才算成功。
+若提示认证：用 GitHub Personal Access Token 作密码，或 `gh auth login` 后再推。
 
-## 2. 建仓库与 Release
+## 2. 打 Release
 
-1. 新建**公开**仓库（建议名 `openidea-apifox-sync`），提交源码（不要包含 `dist/*.oiplugin`、`.key`）。
-2. 打 tag `v0.10.1`，在该 Release 上传：
-   - `<publisher>.apifox-sync-0.10.1.oiplugin`
-   - 可选：同名 `.sha256`
-3. 记下 Release 资源直链：
-   `https://github.com/<owner>/openidea-apifox-sync/releases/download/v0.10.1/<publisher>.apifox-sync-0.10.1.oiplugin`
+仓库里创建 tag `v0.10.1` 的 Release，上传：
+
+- `dist/lidengyin.apifox-sync-0.10.1.oiplugin`
+
+上传后确认直链可下载（应等于 PR 文件里的 `package`）：
+
+```
+https://github.com/lidengyin/openidea-apifox-sync/releases/download/v0.10.1/lidengyin.apifox-sync-0.10.1.oiplugin
+```
+
+> Release 没建好之前，PR 的 CI 会下载 404，先建 Release 再提 PR。
 
 ## 3. 向 openidea-plugins 提 PR
 
-Fork `https://github.com/l0ng-ai/openidea-plugins`，加两个文件：
+Fork `https://github.com/l0ng-ai/openidea-plugins`，把准备好的两个文件放进去：
 
-`publishers/<publisher>.toml`
+- `publishers/lidengyin.toml`
+- `plugins/lidengyin.apifox-sync.toml`
 
-```toml
-name = "你的名字"
-owners = ["<GitHub 账号>"]          # 允许改这些条目的人
-keys = ["8oG5Be7v1eVC5djl5JahY89IyRu+PF/6OUG/Tb6E8d4="]
-revoked-keys = []
+内容就是 `openidea-plugins-pr/` 下的两份。PR 标题示例：`Add lidengyin.apifox-sync`。
+
+CI 会：下载包 → 校验 sha256 → 用最新 IDE 跑 `openidea-plugin check` → 用公钥验签 → 合入后生成索引，
+约一小时内出现在 OpenIDEA 的 Settings › Plugins › Available。
+
+## 4. 后续版本
+
+```sh
+openidea-plugin build
+openidea-plugin pack . --key ~/.openidea-keys/apifox-sync.key \
+  --publisher lidengyin --out dist/lidengyin.apifox-sync-<ver>.oiplugin
+sha256sum dist/lidengyin.apifox-sync-<ver>.oiplugin
 ```
 
-`plugins/<publisher>.apifox-sync.toml`
+在 `plugins/lidengyin.apifox-sync.toml` 里**追加**一个 `[[versions]]`（旧的保留），
+把 `version` / `package` / `sha256` 换成新值，再提 PR。版本号必须与 `plugin.toml` 一致。
 
-```toml
-repository = "https://github.com/<owner>/openidea-apifox-sync"
-suggest = ["pom.xml", "build.gradle.kts", "build.gradle"]   # 最多 8 个，无通配符
+## 5. 规则与密钥管理
 
-[[versions]]
-version = "0.10.1"
-package = "https://github.com/<owner>/openidea-apifox-sync/releases/download/v0.10.1/<publisher>.apifox-sync-0.10.1.oiplugin"
-sha256 = "26f08c2f8cb93bfc1de682266d5a06dbe4e80d30dc9168a046ccb8c93606d331"
-```
-
-> `sha256` 必须是**你实际打包的那个文件**的哈希；改 id/版本重打后要重新算。
-
-## 4. CI 会做什么
-
-- 下载 `package`，校验 `sha256`；
-- 用最新 OpenIDEA 的 `openidea-plugin check` 跑一遍；
-- 用 `publishers/<publisher>.toml` 的 `keys` 验签；
-- 合入后生成 `index.json`，约一小时内出现在 Settings › Plugins › Available；
-- 每天对最新 IDE 复检一次；30 天内不修复会被下架。
-
-## 5. 版本更新
-
-- 只追加 `[[versions]]`，旧版本保留（旧 IDE 会装到它支持 API 的最后版本）；
-- `version` 必须与包内 `plugin.toml` 的 `version` 一致；
-- 换签名密钥：先在新 `keys` 里加新公钥、保留旧公钥，用旧密钥
-  `openidea-plugin endorse "<新公钥>" --key old.key --publisher <id>`，把输出写进 `[endorsements]`。
-
-## 6. 市场规则要点
-
-- 新 publisher / 新插件由维护者审核源码、能力申请理由，并检查是否与现有插件重复；
-- 包必须能从公开仓库构建，不得包含未从该源码构建的混淆代码；
-- README 必须说明为什么需要 `project.write` / `net:ask` / `secrets` 等高危能力；
-- 删除 `plugins/<publisher>.<name>.toml` 即下架（已安装副本仍可用）。
-
-## 7. 当前还差的两件事
-
-1. 仓库尚未 `git init` / 建远程仓库；
-2. `plugin.toml` 的 `id` 仍是占位的 `acme.apifox-sync`，正式发布前改成 `<你的 GitHub 用户名>.apifox-sync` 并重新打包。
+- 必须有公开源码仓库与开源协议（`LICENSE` 已加 MIT）；
+- README 要说明每项能力为什么需要（`README.md` 的「能力与用途」已覆盖）；
+- 不得包含非源码构建的混淆代码；
+- 换密钥：先在新 `keys` 里加新公钥并保留旧公钥，用旧密钥
+  `openidea-plugin endorse "<新公钥>" --key old.key --publisher lidengyin`，把输出写进 `[endorsements]`；
+- 删除 `plugins/lidengyin.apifox-sync.toml` 即下架（已安装副本仍可用）；
+- 对新 IDE 复检失败且 30 天不修会被下架。
