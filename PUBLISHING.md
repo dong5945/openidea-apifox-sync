@@ -5,31 +5,32 @@
 | 项 | 状态 |
 | --- | --- |
 | 插件 id | `lidengyin.apifox-sync`（已从占位 `acme` 改好） |
-| 源码仓库 | https://github.com/lidengyin/openidea-apifox-sync（已存在，公开，空） |
-| 本地 git | 已 `init` + 首次提交（26 个文件），remote 已指向上面的仓库 |
-| 推送 | **未成功**：本机到 github.com:443 连不通，需要你在有代理的环境执行 `git push` |
+| 源码仓库 | https://github.com/lidengyin/openidea-apifox-sync（已存在，公开） |
+| 本地 git | `main` 已建立 upstream，与远端 `5bc395f` 一致 |
+| 推送 | **已完成**：`main` → origin/main（`fd4d0f5..5bc395f`） |
+| Release | v0.11.1 见下一步（上传 `.oiplugin`） |
 | 签名密钥 | 私钥 `C:\Users\DELL\.openidea-keys\apifox-sync.key`（勿提交、自行备份） |
 | 公钥 | `8oG5Be7v1eVC5djl5JahY89IyRu+PF/6OUG/Tb6E8d4=` |
 | 安装包 | `dist/lidengyin.apifox-sync-0.11.1.oiplugin`（229.2 KiB，已签名） |
 | sha256 | `8c201c51a981d6d121a52eb833220dac5cf3bd09d07ba38618d5a21daa4bc0f0` |
 | 市场 PR 文件 | `../openidea-plugins-pr/publishers/lidengyin.toml`、`plugins/lidengyin.apifox-sync.toml` |
 
-## 1. 推送源码
-
-在本机（或任意能访问 github 的机器）执行：
+## 1. 推送源码（已完成）
 
 ```sh
 cd apifox-openidea
-git push -u origin main
+git push -u origin main          # main -> origin/main, fd4d0f5..5bc395f
 ```
 
-若提示认证：用 GitHub Personal Access Token 作密码，或 `gh auth login` 后再推。
+远端最初只有一个网页创建的 `Initial commit`（仅 `LICENSE`），与本地无共同祖先；
+首次推送用 `--allow-unrelated-histories -X ours` 合并，保留本地全部内容。
 
-## 2. 打 Release
+## 2. 打 Release（v0.11.1）
 
-仓库里创建 tag `v0.11.1` 的 Release，上传：
+Release 由 GitHub API 创建（tag `v0.11.1`，指向 `main`），上传：
 
-- `dist/lidengyin.apifox-sync-0.11.1.oiplugin`
+- `dist/lidengyin.apifox-sync-0.11.1.oiplugin`（229.2 KiB）
+- `dist/lidengyin.apifox-sync-0.11.1.oiplugin.sha256`
 
 上传后确认直链可下载（应等于 PR 文件里的 `package`）：
 

@@ -16,7 +16,8 @@
 ## 一、安装（约 2 分钟）
 
 1. 打开 OpenIDEA（0.1.46+）。
-2. `Settings › Plugins` → **Install Plugin from Disk** → 选 `lidengyin.apifox-sync-0.11.0.oiplugin`。
+2. `Settings › Plugins` → 齿轮菜单 → **从插件包文件安装…** → 选 `lidengyin.apifox-sync-0.11.1.oiplugin`。
+   （不要选「从磁盘安装插件…」，那是文件夹选择器，只认含 `plugin.toml` 的目录。）
 3. 弹出权限清单时同意：
 
    | 能力 | 用途 |
@@ -26,10 +27,13 @@
    | `storage` | 每个项目记住自己的映射配置 |
    | `secrets` | 令牌存系统钥匙串；插件只判断"是否已填"，请求头由宿主替换 |
    | `net:api.apifox.com` | 同步时发一次导入请求（私有化部署另加自定义域名授权） |
+   | `net:ask` | 首次连非白名单地址（如私有化部署）时弹一次授权 |
 
 4. 装完右侧出现 **Apifox Sync** 工具窗；没出现就重启 IDE。
 
-> 目前未上架插件市场，只能从磁盘安装。发布链路见 `PUBLISHING.md`。
+> 目前未上架插件市场，安装包从 Release 下载：
+> https://github.com/lidengyin/openidea-apifox-sync/releases/download/v0.11.1/lidengyin.apifox-sync-0.11.1.oiplugin
+> 发布链路见 `PUBLISHING.md`。
 
 ---
 
