@@ -8,12 +8,12 @@
 | 源码仓库 | https://github.com/lidengyin/openidea-apifox-sync（已存在，公开） |
 | 本地 git | `main` 已建立 upstream，与远端 `5bc395f` 一致 |
 | 推送 | **已完成**：`main` → origin/main（`fd4d0f5..5bc395f`） |
-| Release | **已发布**：https://github.com/lidengyin/openidea-apifox-sync/releases/tag/v0.11.2（含 `.oiplugin` + `.sha256`） |
+| Release | **已发布**：https://github.com/lidengyin/openidea-apifox-sync/releases/tag/v0.11.3（含 `.oiplugin` + `.sha256`） |
 | 市场 PR | **已提交**：https://github.com/l0ng-ai/openidea-plugins/pull/233（2 文件，CI `registry` 排队中） |
 | 签名密钥 | 私钥 `C:\Users\DELL\.openidea-keys\apifox-sync.key`（勿提交、自行备份） |
 | 公钥 | `8oG5Be7v1eVC5djl5JahY89IyRu+PF/6OUG/Tb6E8d4=` |
-| 安装包 | `dist/lidengyin.apifox-sync-0.11.2.oiplugin`（231.3 KiB，已签名） |
-| sha256 | `897ddc5ce6ad4eb4612a89bedef26076354404239469b22d033f4f69a1b13f47` |
+| 安装包 | `dist/lidengyin.apifox-sync-0.11.3.oiplugin`（232.0 KiB，已签名） |
+| sha256 | `df16ceca7c47cc43068af957e5acb4d5c640c8890d9e3e1424cc5f68d3770986` |
 | 市场 PR 文件 | `../openidea-plugins-pr/publishers/lidengyin.toml`、`plugins/lidengyin.apifox-sync.toml` |
 
 ## 1. 推送源码（已完成）
@@ -26,17 +26,17 @@ git push -u origin main          # main -> origin/main, fd4d0f5..5bc395f
 远端最初只有一个网页创建的 `Initial commit`（仅 `LICENSE`），与本地无共同祖先；
 首次推送用 `--allow-unrelated-histories -X ours` 合并，保留本地全部内容。
 
-## 2. 打 Release（v0.11.2）
+## 2. 打 Release（v0.11.3）
 
-Release 由 GitHub API 创建（tag `v0.11.2`，指向 `main`），上传：
+Release 由 GitHub API 创建（tag `v0.11.3`，指向 `main`），上传：
 
-- `dist/lidengyin.apifox-sync-0.11.2.oiplugin`（231.3 KiB）
-- `dist/lidengyin.apifox-sync-0.11.2.oiplugin.sha256`
+- `dist/lidengyin.apifox-sync-0.11.3.oiplugin`（232.0 KiB）
+- `dist/lidengyin.apifox-sync-0.11.3.oiplugin.sha256`
 
 上传后确认直链可下载（应等于 PR 文件里的 `package`）：
 
 ```
-https://github.com/lidengyin/openidea-apifox-sync/releases/download/v0.11.2/lidengyin.apifox-sync-0.11.2.oiplugin
+https://github.com/lidengyin/openidea-apifox-sync/releases/download/v0.11.3/lidengyin.apifox-sync-0.11.3.oiplugin
 ```
 
 > Release 没建好之前，PR 的 CI 会下载 404，先建 Release 再提 PR。

@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "openidea-plugin-lidengyin-apifox-sync"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "apifox-core",
  "openidea-plugin",

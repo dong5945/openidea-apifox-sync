@@ -816,6 +816,21 @@ impl Main {
                     {
                         self.e_project_pick.clear();
                     }
+                    // The keys of the project being typed are unknown: drop
+                    // the previous project's choices so the pickers cannot
+                    // offer (or silently keep) a destination from another one.
+                    let project_changed = self
+                        .editing
+                        .and_then(|i| self.mappings.get(i))
+                        .is_some_and(|m| m.project_id != self.e_project);
+                    if project_changed {
+                        self.branches.clear();
+                        self.modules.clear();
+                        self.endpoint_folders.clear();
+                        self.schema_folders.clear();
+                        self.e_endpoint_folder.clear();
+                        self.e_schema_folder.clear();
+                    }
                     return Ok(());
                 }
                 "e_team" => {
@@ -874,6 +889,62 @@ impl Main {
                         .find(|c| c.path == code_path)
                         .map(|c| c.name.clone())
                         .unwrap_or_default();
+                    // Compare with the row as saved, before touching it: the
+                    // project id may have been typed over, and the old
+                    // project's branch/module/folder ids must not survive it.
+                    let Some(saved) = self.mappings.get(index).cloned() else {
+                        return Ok(());
+                    };
+                    let project_changed = saved.project_id != self.e_project;
+                    if project_changed {
+                        self.branches.clear();
+                        self.modules.clear();
+                        self.endpoint_folders.clear();
+                        self.schema_folders.clear();
+                        let pid = self.e_project.clone();
+                        self.refresh_lists(&pid);
+                        self.fetch_folders();
+                    }
+                    let (branch_id, branch_name) = match resolve_branch(
+                        &self.branches,
+                        &self.e_branch,
+                        saved.branch_id,
+                        &saved.branch_name,
+                        !project_changed,
+                    ) {
+                        Ok(picked) => picked,
+                        Err(e) => {
+                            self.status = Some(e);
+                            return Ok(());
+                        }
+                    };
+                    let branch_unchanged = !project_changed && branch_id == saved.branch_id;
+                    let (module_id, module_name) = match resolve_module(
+                        &self.modules,
+                        &self.e_module,
+                        saved.module_id,
+                        &saved.module_name,
+                        branch_unchanged,
+                    ) {
+                        Ok(picked) => picked,
+                        Err(e) => {
+                            self.status = Some(e);
+                            return Ok(());
+                        }
+                    };
+                    // Folder ids belong to the project too; a typed-over
+                    // project only accepts folders picked from its own list.
+                    let (endpoint_folder_id, schema_folder_id) = if project_changed {
+                        (
+                            folder_id_by_path(&self.endpoint_folders, &self.e_endpoint_folder),
+                            folder_id_by_path(&self.schema_folders, &self.e_schema_folder),
+                        )
+                    } else {
+                        (
+                            folder_id_by_label(&self.endpoint_folders, &self.e_endpoint_folder),
+                            folder_id_by_label(&self.schema_folders, &self.e_schema_folder),
+                        )
+                    };
                     if let Some(m) = self.mappings.get_mut(index) {
                         m.enabled = self.e_enabled;
                         m.path = code_path;
@@ -897,40 +968,12 @@ impl Main {
                                 m.project_name = p.name.clone();
                             }
                         }
-                        let project_unchanged = m.project_id == self.e_project;
-                        let (branch_id, branch_name) = match resolve_branch(
-                            &self.branches,
-                            &self.e_branch,
-                            m.branch_id,
-                            &m.branch_name,
-                            project_unchanged,
-                        ) {
-                            Ok(picked) => picked,
-                            Err(e) => {
-                                self.status = Some(e);
-                                return Ok(());
-                            }
-                        };
-                        let branch_unchanged = branch_id == m.branch_id;
-                        let (module_id, module_name) = match resolve_module(
-                            &self.modules,
-                            &self.e_module,
-                            m.module_id,
-                            &m.module_name,
-                            branch_unchanged,
-                        ) {
-                            Ok(picked) => picked,
-                            Err(e) => {
-                                self.status = Some(e);
-                                return Ok(());
-                            }
-                        };
                         m.branch_id = branch_id;
                         m.branch_name = branch_name;
                         m.module_id = module_id;
                         m.module_name = module_name;
-                        m.endpoint_folder_id = folder_id_by_label(&self.endpoint_folders, &self.e_endpoint_folder);
-                        m.schema_folder_id = folder_id_by_label(&self.schema_folders, &self.e_schema_folder);
+                        m.endpoint_folder_id = endpoint_folder_id;
+                        m.schema_folder_id = schema_folder_id;
                         m.endpoint_mode = mode_value(&self.e_endpoint_mode).to_string();
                         m.schema_mode = mode_value(&self.e_schema_mode).to_string();
                         m.naming = self.e_naming.clone();
@@ -1907,6 +1950,16 @@ fn folder_id_by_label(list: &[apifox::Folder], label: &str) -> Option<u64> {
     list.iter().find(|f| f.path == label).map(|f| f.id)
 }
 
+/// Like `folder_id_by_label`, but only accepts a path that exists in `list`:
+/// after a project change an `ID n` label points at the other project.
+fn folder_id_by_path(list: &[apifox::Folder], label: &str) -> Option<u64> {
+    let label = label.trim();
+    if label.is_empty() || label == "根目录" || label.starts_with("ID ") {
+        return None;
+    }
+    list.iter().find(|f| f.path == label).map(|f| f.id)
+}
+
 fn folder_options(
     list: &[apifox::Folder],
     current: Option<u64>,
@@ -2227,6 +2280,8 @@ register_plugin!(Main, views);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openidea_plugin::mock::MockHost;
+    use openidea_plugin::HttpResponse;
 
     fn html_of(report: ImportReport) -> String {
         let main = Main { report: Some(report), ..Default::default() };
@@ -2402,6 +2457,105 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(body["options"]["targetBranchId"], 41);
         assert_eq!(body["options"]["moduleId"], 7);
+    }
+
+    fn saved_row() -> Mapping {
+        Mapping {
+            project_id: "123".into(),
+            project_name: "ERP".into(),
+            branch_id: Some(41),
+            branch_name: "feature".into(),
+            module_id: Some(7),
+            module_name: "orders".into(),
+            ..Default::default()
+        }
+    }
+
+    /// Drives the editor through view events, as the IDE does: open the saved
+    /// row, type a project id, press Save.
+    fn save_after_typing_project(
+        project: &str,
+        reply: impl Fn(&HttpRequest) -> HttpResponse + 'static,
+    ) -> (Option<String>, Vec<Mapping>) {
+        let mock = MockHost::install().with_capabilities(&[
+            "project.read",
+            "project.write",
+            "storage",
+            "secrets",
+            "net:api.apifox.com",
+            "net:ask",
+        ]);
+        mock.set_project_root(Some("/project"));
+        mock.set_secret(APIFOX_SECRET, "token");
+        mock.on_fetch(move |req| Ok(reply(req)));
+        let mut main = Main::default();
+        main.mappings = vec![saved_row()];
+        main.editing = Some(0);
+        main.e_enabled = true;
+        main.e_project = "123".into();
+        main.e_branch = "feature".into();
+        main.e_module = "orders".into();
+        // The row as it already sits in storage before the edit.
+        save_mappings("/project", &main.mappings).unwrap();
+        let ctx = mock.invocation();
+        main.handle_editor(0, ViewEvent::Field("e_project".into(), project.into()), "/project", &ctx)
+            .unwrap();
+        main.handle_editor(0, ViewEvent::Button("save".into()), "/project", &ctx)
+            .unwrap();
+        (main.status.clone(), load_mappings("/project"))
+    }
+
+    fn json_reply(value: &str) -> HttpResponse {
+        HttpResponse { status: 200, headers: Vec::new(), body: value.as_bytes().to_vec() }
+    }
+
+    #[test]
+    fn typing_a_new_project_with_unreachable_lists_keeps_the_old_row() {
+        let (status, saved) = save_after_typing_project("456", |_| HttpResponse {
+            status: 503,
+            headers: Vec::new(),
+            body: b"service unavailable".to_vec(),
+        });
+        // The save is refused, so project 456 never carries 123's ids.
+        assert!(status.as_deref().unwrap_or_default().contains("分支列表未加载"), "{status:?}");
+        let saved = &saved[0];
+        assert_eq!(saved.project_id, "123");
+        assert_eq!(saved.branch_id, Some(41));
+        assert_eq!(saved.module_id, Some(7));
+    }
+
+    #[test]
+    fn typing_a_new_project_revalidates_the_destination_against_its_lists() {
+        let (status, saved) = save_after_typing_project("456", |req| {
+            if req.url.contains("sprint-branches") {
+                json_reply(r#"{"success":true,"data":[{"id":61,"name":"feature","type":"sprint"}]}"#)
+            } else if req.url.contains("modules") {
+                json_reply(r#"{"success":true,"data":[{"id":9,"name":"orders"}]}"#)
+            } else {
+                json_reply(r#"{"success":true,"data":[]}"#)
+            }
+        });
+        assert_eq!(status.as_deref(), Some("映射已保存"));
+        let saved = &saved[0];
+        assert_eq!(saved.project_id, "456");
+        assert_eq!(saved.branch_id, Some(61));
+        assert_eq!(saved.branch_name, "feature");
+        assert_eq!(saved.module_id, Some(9));
+        assert_eq!(saved.module_name, "orders");
+    }
+
+    #[test]
+    fn saving_an_untouched_row_through_the_editor_keeps_its_ids() {
+        let (status, saved) = save_after_typing_project("123", |_| HttpResponse {
+            status: 503,
+            headers: Vec::new(),
+            body: b"service unavailable".to_vec(),
+        });
+        assert_eq!(status.as_deref(), Some("映射已保存"));
+        let saved = &saved[0];
+        assert_eq!(saved.project_id, "123");
+        assert_eq!(saved.branch_id, Some(41));
+        assert_eq!(saved.module_id, Some(7));
     }
 
     #[test]

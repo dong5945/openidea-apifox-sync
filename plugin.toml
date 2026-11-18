@@ -1,8 +1,11 @@
 id = "lidengyin.apifox-sync"
 name = "Apifox Sync"
-version = "0.11.2"
+version = "0.11.3"
 description = "读取项目里的 Spring Controller 源码，生成 OpenAPI 3.0 并同步到 Apifox 项目：无需启动服务、不用 Swagger，按代码模块映射项目/分支/模块/目录，同步后给出每个模块的导入结果统计。"
 change-notes = """
+0.11.3
+- 修复：手动修改项目 ID 再保存时，会沿用上一个项目的分支/模块/目录 ID（保存时先赋值后比较，project_unchanged 恒为真）。现在先与保存前的项目比较；项目变更会清空并重新拉取该项目的分支、模块与目录，校验通过才写入，拉取失败则拒绝保存而不是写入旧目标。
+
 0.11.2
 - 修复：分支/模块列表加载失败（如 HTTP 503）时，打开映射行再点「保存」会把已存的分支/模块 ID 清空，下一次同步丢掉目标分支。现在未改动即保留原 ID，只有显式选择「(主分支)」「(默认模块)」才会重置。
 - 修复：导出的 docs/openapi.yaml 中，数组内对象的续行缩进不合法，含 @RequestParam 的接口导出后 PyYAML 报 expected <block end>；改用对齐的块式输出，导出的 YAML 可被 PyYAML 解析且与 JSON 文档完全等价。

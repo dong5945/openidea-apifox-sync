@@ -114,8 +114,8 @@ $ cargo build --release --target wasm32-wasip2
    Finished `release` profile
 $ cp target/wasm32-wasip2/release/openidea_plugin_lidengyin_apifox_sync.wasm dist/plugin.wasm
 $ openidea-plugin check .
-lidengyin.apifox-sync 0.11.2 — Apifox Sync
-  code: dist/plugin.wasm (604.5 KiB, plugin API 1.9)
+lidengyin.apifox-sync 0.11.3 — Apifox Sync
+  code: dist/plugin.wasm (605.9 KiB, plugin API 1.9)
   categories: frameworks, tools
   contributes 5 × commands
   contributes 5 × menus

@@ -4,10 +4,10 @@
 不启动服务、不依赖 Swagger，改完源码即可同步。
 
 - 插件 id：`lidengyin.apifox-sync`
-- 版本：`0.11.2`
+- 版本：`0.11.3`
 - 要求：OpenIDEA **0.1.46 及以上**（`plugin.toml` 声明 `engines.openidea = "^1.9"`）
-- 安装包：`dist/lidengyin.apifox-sync-0.11.2.oiplugin`（约 231 KiB，已签名，内含 wasm）
-- sha256：`897ddc5ce6ad4eb4612a89bedef26076354404239469b22d033f4f69a1b13f47`
+- 安装包：`dist/lidengyin.apifox-sync-0.11.3.oiplugin`（约 232 KiB，已签名，内含 wasm）
+- sha256：`df16ceca7c47cc43068af957e5acb4d5c640c8890d9e3e1424cc5f68d3770986`
 
 用的人**不需要** Rust、Node、WSL 环境——插件是编译好的 wasm，装完即用。
 
@@ -16,7 +16,7 @@
 ## 一、安装（约 2 分钟）
 
 1. 打开 OpenIDEA（0.1.46+）。
-2. `Settings › Plugins` → 齿轮菜单 → **从插件包文件安装…** → 选 `lidengyin.apifox-sync-0.11.2.oiplugin`。
+2. `Settings › Plugins` → 齿轮菜单 → **从插件包文件安装…** → 选 `lidengyin.apifox-sync-0.11.3.oiplugin`。
    （不要选「从磁盘安装插件…」，那是文件夹选择器，只认含 `plugin.toml` 的目录。）
 3. 弹出权限清单时同意：
 
@@ -32,7 +32,7 @@
 4. 装完右侧出现 **Apifox Sync** 工具窗；没出现就重启 IDE。
 
 > 目前未上架插件市场，安装包从 Release 下载：
-> https://github.com/lidengyin/openidea-apifox-sync/releases/download/v0.11.2/lidengyin.apifox-sync-0.11.2.oiplugin
+> https://github.com/lidengyin/openidea-apifox-sync/releases/download/v0.11.3/lidengyin.apifox-sync-0.11.3.oiplugin
 > 发布链路见 `PUBLISHING.md`。
 
 ---
