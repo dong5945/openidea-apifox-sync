@@ -570,20 +570,10 @@ impl Main {
 
     fn editor_view(&self, index: usize, root: &str) -> View {
         let m = &self.mappings[index];
-        let mut branches = vec![NO_BRANCH.to_string()];
-        branches.extend(self.branches.iter().map(|b| b.label()));
-        let mut modules = vec![DEFAULT_MODULE.to_string()];
-        modules.extend(self.modules.iter().map(|m| m.name.clone()));
-        let branch_selected = if branches.contains(&self.e_branch) {
-            self.e_branch.clone()
-        } else {
-            NO_BRANCH.to_string()
-        };
-        let module_selected = if modules.contains(&self.e_module) {
-            self.e_module.clone()
-        } else {
-            DEFAULT_MODULE.to_string()
-        };
+        // The stored label stays an option even when the lookup failed, so an
+        // unchanged row never silently falls back to the main branch/default module.
+        let (branches, branch_selected) = branch_options(&self.branches, &self.e_branch);
+        let (modules, module_selected) = module_options(&self.modules, &self.e_module);
         let mut code_labels: Vec<String> = self
             .module_labels()
             .into_iter()
@@ -907,12 +897,38 @@ impl Main {
                                 m.project_name = p.name.clone();
                             }
                         }
-                        let branch = self.branches.iter().find(|b| b.label() == self.e_branch);
-                        m.branch_id = branch.map(|b| b.id);
-                        m.branch_name = branch.map(|b| b.name.clone()).unwrap_or_default();
-                        let module = self.modules.iter().find(|m| m.name == self.e_module);
-                        m.module_id = module.map(|m| m.id);
-                        m.module_name = module.map(|m| m.name.clone()).unwrap_or_default();
+                        let project_unchanged = m.project_id == self.e_project;
+                        let (branch_id, branch_name) = match resolve_branch(
+                            &self.branches,
+                            &self.e_branch,
+                            m.branch_id,
+                            &m.branch_name,
+                            project_unchanged,
+                        ) {
+                            Ok(picked) => picked,
+                            Err(e) => {
+                                self.status = Some(e);
+                                return Ok(());
+                            }
+                        };
+                        let branch_unchanged = branch_id == m.branch_id;
+                        let (module_id, module_name) = match resolve_module(
+                            &self.modules,
+                            &self.e_module,
+                            m.module_id,
+                            &m.module_name,
+                            branch_unchanged,
+                        ) {
+                            Ok(picked) => picked,
+                            Err(e) => {
+                                self.status = Some(e);
+                                return Ok(());
+                            }
+                        };
+                        m.branch_id = branch_id;
+                        m.branch_name = branch_name;
+                        m.module_id = module_id;
+                        m.module_name = module_name;
                         m.endpoint_folder_id = folder_id_by_label(&self.endpoint_folders, &self.e_endpoint_folder);
                         m.schema_folder_id = folder_id_by_label(&self.schema_folders, &self.e_schema_folder);
                         m.endpoint_mode = mode_value(&self.e_endpoint_mode).to_string();
@@ -1783,6 +1799,96 @@ fn load_folders(
     }
 }
 
+/// Branch choices for the editor. A stored label that is not in the fetched
+/// list stays selectable: the lists are cleared when the editor opens and may
+/// fail to load, and dropping the label would silently save the main branch.
+fn branch_options(list: &[apifox::Branch], current: &str) -> (Vec<String>, String) {
+    let mut options = vec![NO_BRANCH.to_string()];
+    options.extend(list.iter().map(|b| b.label()));
+    // A row stores the branch name; the picker shows `name（迭代分支）`.
+    let selected = if let Some(b) = list.iter().find(|b| b.name == current || b.label() == current) {
+        b.label()
+    } else if !current.is_empty() && current != NO_BRANCH {
+        if !options.iter().any(|o| o == current) {
+            options.push(current.to_string());
+        }
+        current.to_string()
+    } else {
+        NO_BRANCH.to_string()
+    };
+    (options, selected)
+}
+
+/// Module choices; same rule as `branch_options`.
+fn module_options(list: &[apifox::Module], current: &str) -> (Vec<String>, String) {
+    let mut options = vec![DEFAULT_MODULE.to_string()];
+    options.extend(list.iter().map(|m| m.name.clone()));
+    if !current.is_empty() && !options.iter().any(|o| o == current) {
+        options.push(current.to_string());
+    }
+    let selected = if options.iter().any(|o| o == current) {
+        current.to_string()
+    } else {
+        DEFAULT_MODULE.to_string()
+    };
+    (options, selected)
+}
+
+/// What the saved row should keep for its branch. Unchanged text keeps the
+/// stored id even when the list is missing; anything else must be validated
+/// against the list, so a failed lookup can never turn "feature/41" into
+/// "main" (`branchId: null`) behind the user's back.
+fn resolve_branch(
+    list: &[apifox::Branch],
+    chosen: &str,
+    saved_id: Option<u64>,
+    saved_name: &str,
+    project_unchanged: bool,
+) -> Result<(Option<u64>, String), String> {
+    if let Some(b) = list.iter().find(|b| b.name == chosen || b.label() == chosen) {
+        return Ok((Some(b.id), b.name.clone()));
+    }
+    let saved_label = if saved_name.is_empty() { NO_BRANCH } else { saved_name };
+    if chosen == saved_label && project_unchanged {
+        return Ok((saved_id, saved_name.to_string()));
+    }
+    if chosen == NO_BRANCH {
+        return Ok((None, String::new()));
+    }
+    Err(if list.is_empty() {
+        format!("分支列表未加载，无法校验「{chosen}」；点「刷新分支」后重试")
+    } else {
+        format!("分支「{chosen}」不在当前项目里；请重新选择，或显式选择「{NO_BRANCH}」")
+    })
+}
+
+/// Module counterpart of `resolve_branch`. A branch change invalidates the
+/// stored module id (module ids are branch-scoped), so an unchanged label may
+/// only be kept while the branch itself did not change.
+fn resolve_module(
+    list: &[apifox::Module],
+    chosen: &str,
+    saved_id: Option<u64>,
+    saved_name: &str,
+    branch_unchanged: bool,
+) -> Result<(Option<u64>, String), String> {
+    if let Some(m) = list.iter().find(|m| m.name == chosen) {
+        return Ok((Some(m.id), m.name.clone()));
+    }
+    let saved_label = if saved_name.is_empty() { DEFAULT_MODULE } else { saved_name };
+    if chosen == saved_label && branch_unchanged {
+        return Ok((saved_id, saved_name.to_string()));
+    }
+    if chosen == DEFAULT_MODULE {
+        return Ok((None, String::new()));
+    }
+    Err(if list.is_empty() {
+        format!("模块列表未加载，无法校验「{chosen}」；点「刷新模块」后重试")
+    } else {
+        format!("模块「{chosen}」不在当前分支里；请重新选择，或显式选择「{DEFAULT_MODULE}」")
+    })
+}
+
 fn folder_label_by_id(list: &[apifox::Folder], id: u64) -> String {
     list.iter()
         .find(|f| f.id == id)
@@ -2193,6 +2299,109 @@ mod tests {
         assert_eq!(html.matches("<div").count(), html.matches("</div>").count(), "{html}");
         assert_eq!(html.matches("<table").count(), html.matches("</table>").count());
         assert_eq!(html.matches("<tr").count(), html.matches("</tr>").count());
+    }
+
+    #[test]
+    fn failed_branch_lookup_keeps_the_saved_destination() {
+        let list: Vec<apifox::Branch> = Vec::new();
+        // HTTP 503 for the branch list, row untouched: keep 41/feature.
+        assert_eq!(
+            resolve_branch(&list, "feature", Some(41), "feature", true).unwrap(),
+            (Some(41), "feature".to_string())
+        );
+        // Same for a row on the main branch.
+        assert_eq!(resolve_branch(&list, NO_BRANCH, None, "", true).unwrap(), (None, String::new()));
+        // The editor still offers the stored branch instead of showing 主分支.
+        let (options, selected) = branch_options(&list, "feature");
+        assert!(options.contains(&"feature".to_string()), "{options:?}");
+        assert_eq!(selected, "feature");
+    }
+
+    #[test]
+    fn a_branch_that_cannot_be_validated_is_not_silently_reset() {
+        let list: Vec<apifox::Branch> = Vec::new();
+        // Another project: the stored branch belongs to the old one, so the
+        // save is refused until the list loads.
+        assert!(resolve_branch(&list, "feature", Some(41), "feature", false).is_err());
+        // A label that is neither stored nor listed is refused too.
+        assert!(resolve_branch(&list, "hotfix", Some(41), "feature", true).is_err());
+        // Choosing "(主分支)" explicitly is the only way to reset.
+        assert_eq!(
+            resolve_branch(&list, NO_BRANCH, Some(41), "feature", true).unwrap(),
+            (None, String::new())
+        );
+        // A list that did load wins over the stored id.
+        let list = vec![apifox::Branch {
+            id: 41,
+            name: "feature".into(),
+            is_main: false,
+            kind: "sprint".into(),
+        }];
+        assert_eq!(
+            resolve_branch(&list, "feature", Some(7), "old", true).unwrap(),
+            (Some(41), "feature".to_string())
+        );
+    }
+
+    #[test]
+    fn failed_module_lookup_keeps_the_saved_module_unless_the_branch_changed() {
+        let list: Vec<apifox::Module> = Vec::new();
+        assert_eq!(
+            resolve_module(&list, "orders", Some(7), "orders", true).unwrap(),
+            (Some(7), "orders".to_string())
+        );
+        // Module ids are branch-scoped: after a branch change the old id is
+        // not reusable, and the save must ask for a choice.
+        assert!(resolve_module(&list, "orders", Some(7), "orders", false).is_err());
+        assert_eq!(
+            resolve_module(&list, DEFAULT_MODULE, Some(7), "orders", false).unwrap(),
+            (None, String::new())
+        );
+        let list = vec![apifox::Module { id: 7, name: "orders".into() }];
+        assert_eq!(
+            resolve_module(&list, "orders", Some(1), "old", false).unwrap(),
+            (Some(7), "orders".to_string())
+        );
+    }
+
+    #[test]
+    fn preserved_ids_reach_the_next_import_request() {
+        // The row as saved before the branch/module lists started failing.
+        let mut row = Mapping {
+            project_id: "123".into(),
+            branch_id: Some(41),
+            branch_name: "feature".into(),
+            module_id: Some(7),
+            module_name: "orders".into(),
+            ..Default::default()
+        };
+        let no_branches: Vec<apifox::Branch> = Vec::new();
+        let no_modules: Vec<apifox::Module> = Vec::new();
+        // Opening the row and clicking Save while both lookups return 503.
+        let (branch_id, branch_name) =
+            resolve_branch(&no_branches, "feature", row.branch_id, &row.branch_name, true).unwrap();
+        let (module_id, module_name) = resolve_module(
+            &no_modules,
+            "orders",
+            row.module_id,
+            &row.module_name,
+            branch_id == row.branch_id,
+        )
+        .unwrap();
+        row.branch_id = branch_id;
+        row.branch_name = branch_name;
+        row.module_id = module_id;
+        row.module_name = module_name;
+
+        let opts = apifox::ImportOptions {
+            branch_id: row.branch_id,
+            module_id: row.module_id,
+            ..apifox::ImportOptions::default()
+        };
+        let request = apifox::import_request(&row.project_id, "{\"openapi\":\"3.0.3\"}", &opts);
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        assert_eq!(body["options"]["targetBranchId"], 41);
+        assert_eq!(body["options"]["moduleId"], 7);
     }
 
     #[test]

@@ -1,8 +1,12 @@
 id = "lidengyin.apifox-sync"
 name = "Apifox Sync"
-version = "0.11.1"
+version = "0.11.2"
 description = "读取项目里的 Spring Controller 源码，生成 OpenAPI 3.0 并同步到 Apifox 项目：无需启动服务、不用 Swagger，按代码模块映射项目/分支/模块/目录，同步后给出每个模块的导入结果统计。"
 change-notes = """
+0.11.2
+- 修复：分支/模块列表加载失败（如 HTTP 503）时，打开映射行再点「保存」会把已存的分支/模块 ID 清空，下一次同步丢掉目标分支。现在未改动即保留原 ID，只有显式选择「(主分支)」「(默认模块)」才会重置。
+- 修复：导出的 docs/openapi.yaml 中，数组内对象的续行缩进不合法，含 @RequestParam 的接口导出后 PyYAML 报 expected <block end>；改用对齐的块式输出，导出的 YAML 可被 PyYAML 解析且与 JSON 文档完全等价。
+
 0.11.1
 - 映射：读 pom.xml / settings.gradle 检测代码模块；团队 → Apifox 项目、分支/版本、模块、接口与数据模型目录全部下拉选择，覆盖策略与参数命名转换可配。
 - 同步：同步全部只跑启用的行；在项目视图右键某个 .java 或目录时只导出选中范围内的接口（类型仍按全项目解析）。

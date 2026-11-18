@@ -10,10 +10,11 @@ use apifox_core::{apifox, openapi, scan_modules};
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let Some(root) = args.next() else {
-        eprintln!("用法: apifox-gen <项目目录> [--json 输出路径] [--project <Apifox项目ID>] [--branch <分支ID>] [--module <模块ID>]");
+        eprintln!("用法: apifox-gen <项目目录> [--json 输出路径] [--yaml 输出路径] [--project <Apifox项目ID>] [--branch <分支ID>] [--module <模块ID>]");
         return ExitCode::from(2);
     };
     let mut out: Option<PathBuf> = None;
+    let mut out_yaml: Option<PathBuf> = None;
     let mut project: Option<String> = None;
     let mut branch: Option<u64> = None;
     let mut module: Option<u64> = None;
@@ -22,6 +23,7 @@ fn main() -> ExitCode {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--json" => out = args.next().map(PathBuf::from),
+            "--yaml" => out_yaml = args.next().map(PathBuf::from),
             "--project" => project = args.next(),
             "--branch" => branch = args.next().and_then(|v| v.parse().ok()),
             "--module" => module = args.next().and_then(|v| v.parse().ok()),
@@ -143,6 +145,18 @@ fn main() -> ExitCode {
             println!("已写入 {}", path.display());
         }
         None => println!("\n{json}"),
+    }
+    if let Some(path) = out_yaml {
+        let value: serde_json::Value = serde_json::from_str(&json).expect("render 输出是 JSON");
+        let yaml = apifox_core::yaml::to_yaml(&value);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(&path, &yaml) {
+            eprintln!("写入 {} 失败: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+        println!("已写入 {}", path.display());
     }
 
     if let Some(id) = project {
