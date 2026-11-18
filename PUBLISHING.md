@@ -8,7 +8,8 @@
 | 源码仓库 | https://github.com/lidengyin/openidea-apifox-sync（已存在，公开） |
 | 本地 git | `main` 已建立 upstream，与远端 `5bc395f` 一致 |
 | 推送 | **已完成**：`main` → origin/main（`fd4d0f5..5bc395f`） |
-| Release | v0.11.1 见下一步（上传 `.oiplugin`） |
+| Release | **已发布**：https://github.com/lidengyin/openidea-apifox-sync/releases/tag/v0.11.1（含 `.oiplugin` + `.sha256`） |
+| 市场 PR | **已提交**：https://github.com/l0ng-ai/openidea-plugins/pull/233（2 文件，CI `registry` 排队中） |
 | 签名密钥 | 私钥 `C:\Users\DELL\.openidea-keys\apifox-sync.key`（勿提交、自行备份） |
 | 公钥 | `8oG5Be7v1eVC5djl5JahY89IyRu+PF/6OUG/Tb6E8d4=` |
 | 安装包 | `dist/lidengyin.apifox-sync-0.11.1.oiplugin`（229.2 KiB，已签名） |
